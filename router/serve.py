@@ -8,7 +8,7 @@ Reuses the same node for the whole job (model stays loaded in VRAM).
 
 Config: nodes.yaml next to this file.
 """
-import asyncio, json, os, time
+import asyncio, json, os, time, base64
 from pathlib import Path
 
 import httpx
@@ -17,6 +17,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+
+import db as usage_db
 
 HERE = Path(__file__).parent
 NODES_FILE = HERE / 'nodes.yaml'
@@ -30,6 +32,17 @@ def load_nodes():
     return cfg.get('nodes', [])
 
 NODES = load_nodes()
+usage_db.init()
+
+def auth_user(request: Request) -> str:
+    """Extract username from Basic auth header (nginx passes it)."""
+    a = request.headers.get('authorization', '')
+    if a.lower().startswith('basic '):
+        try:
+            return base64.b64decode(a.split(' ', 1)[1]).decode().split(':', 1)[0] or 'anon'
+        except Exception:
+            pass
+    return 'anon'
 
 app = FastAPI(title="gpux router")
 
@@ -114,7 +127,7 @@ async def status():
             'free': free, 'total': len(nodes)}
 
 @app.post("/api/generate")
-async def generate(req: GenRequest):
+async def generate(req: GenRequest, request: Request):
     node, h = await pick_node(req.modality, req.model)
     body = req.model_dump()
     async with httpx.AsyncClient(timeout=15) as client:
@@ -125,6 +138,12 @@ async def generate(req: GenRequest):
     jid = j.get('id')
     if jid:
         _job_node[jid] = node['name']
+        try:
+            usage_db.record_job(jid, auth_user(request), node['name'],
+                                req.model or 'default', req.resolution, req.steps,
+                                req.seed, time.time())
+        except Exception as e:
+            print(f'[router] usage record failed: {e}', flush=True)
     j['node'] = node['name']
     return j
 
@@ -135,7 +154,21 @@ async def job_status(jid: str):
         raise HTTPException(404, detail='unknown job')
     async with httpx.AsyncClient(timeout=5) as client:
         r = await client.get(node_url(name) + f'/api/jobs/{jid}')
-        return JSONResponse(r.json(), status_code=r.status_code)
+        j = r.json()
+        if j.get('status') in ('done', 'error'):
+            try:
+                usage_db.finish_job(jid, j['status'], j.get('total'))
+            except Exception:
+                pass
+        return JSONResponse(j, status_code=r.status_code)
+
+@app.get("/api/usage")
+async def usage(limit: int = 50):
+    return {'jobs': usage_db.recent(limit)}
+
+@app.get("/api/usage/summary")
+async def usage_summary():
+    return {'summary': usage_db.summary(), 'total': usage_db.count_all()}
 
 @app.get("/api/events")
 async def events(request: Request):

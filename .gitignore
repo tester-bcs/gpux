@@ -5,3 +5,4 @@ nodes.yaml
 serve.log
 *.log
 .venv/
+usage.db
