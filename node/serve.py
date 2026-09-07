@@ -153,21 +153,40 @@ async def api_generate(req: GenRequest):
     state['queue_len'] = job_queue.qsize()
     return {"id": jid, "queue": state['queue_len'], "busy": state['busy']}
 
+def free_vram_gb():
+    """Actual free VRAM on GPU0 (accounts for games/render/apps)."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            free, total = torch.cuda.mem_get_info(0)
+            return round(free / 1024**3, 1), round(total / 1024**3, 1)
+    except Exception:
+        pass
+    return None, None
+
 @app.get("/api/status")
 async def api_status():
     farming = FARMING_FLAG.exists()
+    free_gb, total_gb = free_vram_gb()
+    vram_ok = free_gb is None or free_gb >= config.MIN_FREE_VRAM_GB
     return {
-        "ready": state['model_ready'] and not farming,
+        "ready": state['model_ready'] and not farming and vram_ok,
         "farming": farming,
         "busy": state['busy'],
         "queue": state['queue_len'], "current": state['current_job'],
         "init_elapsed": round(time.time() - state['init_started'], 1),
         "init_error": state['init_error'],
+        "free_vram_gb": free_gb, "total_vram_gb": total_gb,
+        "vram_ok": vram_ok,
     }
 
 @app.get("/api/capabilities")
 async def api_capabilities():
-    return config.CAPABILITIES
+    caps = dict(config.CAPABILITIES)
+    free_gb, _ = free_vram_gb()
+    if free_gb is not None:
+        caps["free_vram_gb"] = free_gb
+    return caps
 
 @app.get("/api/events")
 async def api_events(request: Request):

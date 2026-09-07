@@ -23,6 +23,10 @@ MODEL_TYPE = 'flux2_klein_4b'
 # extra CLI args for WanGP init()
 WAN2GP_ARGS = ["--attention", "sdpa", "--profile", "4"]
 
+# min free VRAM (GB) for the node to accept tasks — if a game/render eats the GPU,
+# the node honestly goes offline in /api/status
+MIN_FREE_VRAM_GB = 6.0
+
 # what this node can serve (router routes by these)
 CAPABILITIES = {
     "backends": ["wangp"],
