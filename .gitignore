@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+previews/
+nodes.yaml
+serve.log
+*.log
+.venv/

@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WanGP Studio</title>
+<style>
+:root {
+  --bg: #0a0a0a; --card: #171717; --card2: #1f1f1f;
+  --text: #ececec; --dim: #8a8a8a; --accent: #ff7a1a;
+  --accent-dim: #ff7a1a33; --radius: 14px;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--text);
+  font-family: Inter, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  min-height: 100vh; padding: 0 20px 60px;
+}
+.hero { max-width: 860px; margin: 0 auto; padding-top: 48px; }
+.logo { text-align: center; margin-bottom: 28px; }
+.logo h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.5px; }
+.logo h1 span { color: var(--accent); }
+.logo p { color: var(--dim); font-size: 13px; margin-top: 4px; }
+
+/* prompt card */
+.prompt-card {
+  background: var(--card); border: 1px solid #262626; border-radius: var(--radius);
+  padding: 14px; transition: border-color .2s;
+}
+.prompt-card:focus-within { border-color: #3a3a3a; }
+textarea {
+  width: 100%; background: transparent; border: none; outline: none;
+  color: var(--text); font-size: 17px; line-height: 1.5; resize: none;
+  font-family: inherit; min-height: 56px; max-height: 200px;
+}
+textarea::placeholder { color: #555; }
+.controls {
+  display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap;
+}
+.chip {
+  background: var(--card2); border: 1px solid #2a2a2a; border-radius: 10px;
+  color: var(--dim); font-size: 13px; padding: 8px 12px; cursor: pointer;
+  display: flex; align-items: center; gap: 6px; user-select: none;
+}
+.chip:hover { border-color: #3a3a3a; color: var(--text); }
+.chip.active { color: var(--text); border-color: var(--accent-dim); }
+.chip .val { color: var(--accent); }
+.popover {
+  display: none; background: var(--card2); border: 1px solid #2a2a2a;
+  border-radius: 12px; padding: 14px; margin-top: 10px;
+  display: grid; gap: 14px;
+}
+.popover.hidden { display: none; }
+.pop-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.pop-row label { font-size: 13px; color: var(--dim); }
+.pop-row .rv { color: var(--text); font-size: 13px; min-width: 86px; text-align: right; }
+input[type=range] { flex: 1; accent-color: var(--accent); }
+input[type=text].seedin {
+  background: var(--card); border: 1px solid #2a2a2a; border-radius: 8px;
+  color: var(--text); padding: 7px 10px; font-size: 13px; width: 130px; outline: none;
+}
+.res-presets { display: flex; gap: 6px; flex-wrap: wrap; }
+.res-p {
+  border: 1px solid #2a2a2a; border-radius: 8px; background: transparent;
+  color: var(--dim); font-size: 12px; padding: 6px 10px; cursor: pointer;
+}
+.res-p.active { color: var(--accent); border-color: var(--accent-dim); }
+
+.gen-btn {
+  margin-left: auto; background: var(--accent); color: #000; border: none;
+  border-radius: 10px; padding: 10px 26px; font-size: 15px; font-weight: 600;
+  cursor: pointer; transition: filter .15s, opacity .2s;
+}
+.gen-btn:hover { filter: brightness(1.1); }
+.gen-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+/* current job */
+.job-card {
+  max-width: 860px; margin: 18px auto 0; background: var(--card);
+  border: 1px solid #262626; border-radius: var(--radius); padding: 14px;
+  display: none;
+}
+.job-card.show { display: block; }
+.job-top { display: flex; justify-content: space-between; font-size: 13px; color: var(--dim); }
+.job-top b { color: var(--text); font-weight: 500; }
+.pbar { height: 5px; background: #262626; border-radius: 3px; margin-top: 10px; overflow: hidden; }
+.pbar div { height: 100%; background: var(--accent); width: 0%; transition: width .4s; border-radius: 3px; }
+.job-preview { margin-top: 12px; text-align: center; display: none; }
+.job-preview img { max-width: 100%; max-height: 340px; border-radius: 10px; }
+.job-err { margin-top: 10px; color: #ff5c5c; font-size: 13px; display: none; }
+
+/* gallery */
+.gallery-wrap { max-width: 1100px; margin: 40px auto 0; }
+.gal-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 14px; }
+.gal-head h2 { font-size: 15px; font-weight: 500; color: var(--dim); }
+.grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+.tile {
+  position: relative; border-radius: 12px; overflow: hidden; cursor: pointer;
+  background: var(--card); animation: pop .25s ease;
+  aspect-ratio: 4/3;
+}
+.tile img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .25s; }
+.tile:hover img { transform: scale(1.04); }
+@keyframes pop { from { opacity: 0; transform: scale(.96); } to { opacity: 1; transform: scale(1); } }
+.empty { color: #555; font-size: 14px; text-align: center; padding: 50px 0; }
+.empty em { color: var(--dim); cursor: pointer; font-style: normal; border-bottom: 1px dashed #444; }
+.empty em:hover { color: var(--accent); border-color: var(--accent); }
+
+/* lightbox */
+.lb {
+  display: none; position: fixed; inset: 0; background: #000000e6; z-index: 50;
+  align-items: center; justify-content: center; flex-direction: column; gap: 14px;
+}
+.lb.show { display: flex; }
+.lb img { max-width: 92vw; max-height: 78vh; border-radius: 10px; }
+.lb-meta { color: var(--dim); font-size: 13px; max-width: 760px; text-align: center; word-break: break-word; }
+.lb-actions { display: flex; gap: 10px; }
+.lb-btn {
+  background: var(--card2); color: var(--text); border: 1px solid #2a2a2a;
+  border-radius: 10px; padding: 9px 18px; font-size: 14px; cursor: pointer; text-decoration: none;
+}
+.lb-btn:hover { border-color: var(--accent-dim); }
+.toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  background: var(--card2); border: 1px solid #2a2a2a; color: var(--text);
+  border-radius: 10px; padding: 10px 18px; font-size: 14px; display: none; z-index: 60;
+}
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <div class="logo">
+    <h1>WanGP <span>Studio</span></h1>
+    <p>локальная генерация изображений · Flux Klein 4B</p>
+  </div>
+
+  <div class="prompt-card">
+    <textarea id="prompt" placeholder="Опиши, что нарисовать… (Enter — сгенерировать)" rows="2"></textarea>
+    <div class="controls">
+      <div class="chip" id="resChip">▦ <span class="val" id="resVal">1280×960</span></div>
+      <div class="chip" id="stepsChip">◍ <span class="val" id="stepsVal">20</span> шагов</div>
+      <div class="chip" id="seedChip">⚄ <span class="val" id="seedVal">random</span></div>
+      <button class="gen-btn" id="genBtn" disabled>Generate</button>
+    </div>
+
+    <div class="popover hidden" id="resPop">
+      <div class="pop-row"><label>Разрешение</label></div>
+      <div class="res-presets" id="resPresets">
+        <button class="res-p" data-r="640x480">640×480</button>
+        <button class="res-p active" data-r="1280x960">1280×960</button>
+        <button class="res-p" data-r="1536x1152">1536×1152</button>
+        <button class="res-p" data-r="1024x1024">1024×1024</button>
+      </div>
+    </div>
+    <div class="popover hidden" id="stepsPop">
+      <div class="pop-row">
+        <label>Шаги инференса</label><span class="rv" id="stepsRV">20 — качество/скорость</span>
+      </div>
+      <div class="pop-row"><input type="range" id="stepsRange" min="4" max="50" value="20" step="1"></div>
+    </div>
+    <div class="popover hidden" id="seedPop">
+      <div class="pop-row">
+        <label>Seed (пусто = случайный)</label>
+        <input type="text" class="seedin" id="seedIn" placeholder="напр. 42">
+      </div>
+    </div>
+  </div>
+
+  <div class="job-card" id="jobCard">
+    <div class="job-top"><span><b id="jobPhase">инициализация</b></span><span id="jobStep"></span></div>
+    <div class="pbar"><div id="jobBar"></div></div>
+    <div class="job-preview" id="jobPrev"><img id="jobPrevImg" alt=""></div>
+    <div class="job-err" id="jobErr"></div>
+  </div>
+</div>
+
+<div class="gallery-wrap">
+  <div class="gal-head"><h2>Галерея</h2><span class="chip" id="galCount" style="cursor:default"></span></div>
+  <div class="grid" id="grid"></div>
+  <div class="empty" id="empty">Пока пусто. Попробуй: <em onclick="useExample()">рыжий кот на фоне солнечного леса</em></div>
+</div>
+
+<div class="lb" id="lb" onclick="if(event.target===this)closeLb()">
+  <img id="lbImg">
+  <div class="lb-meta" id="lbMeta"></div>
+  <div class="lb-actions">
+    <a class="lb-btn" id="lbDl" download>Скачать</a>
+    <button class="lb-btn" onclick="closeLb()">Закрыть</button>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const API = location.pathname.replace(/\/+$/, ''); // '' локально, '/studio' через прокси
+let modelReady = false, busy = false, curJob = null;
+
+/* ---- settings chips / popovers ---- */
+function togglePop(id) {
+  ['resPop','stepsPop','seedPop'].forEach(p => {
+    const el = $(p);
+    if (p === id) el.classList.toggle('hidden');
+    else el.classList.add('hidden');
+  });
+}
+$('resChip').onclick = () => togglePop('resPop');
+$('stepsChip').onclick = () => togglePop('stepsPop');
+$('seedChip').onclick = () => togglePop('seedPop');
+
+let res = '1280x960', steps = 20, seed = null;
+$('resPresets').onclick = e => {
+  if (!e.target.dataset.r) return;
+  res = e.target.dataset.r;
+  $('resVal').textContent = res.replace('x','×');
+  document.querySelectorAll('.res-p').forEach(b => b.classList.toggle('active', b.dataset.r === res));
+  togglePop('resPop');
+};
+$('stepsRange').oninput = e => {
+  steps = +e.target.value;
+  $('stepsVal').textContent = steps;
+  $('stepsRV').textContent = steps <= 8 ? steps + ' — быстро' : steps <= 25 ? steps + ' — качество/скорость' : steps + ' — максимум качества';
+};
+$('seedIn').oninput = e => {
+  seed = e.target.value.trim() === '' ? null : parseInt(e.target.value) || null;
+  $('seedVal').textContent = seed === null ? 'random' : seed;
+};
+
+/* ---- prompt: autosize + enter ---- */
+const promptEl = $('prompt');
+promptEl.addEventListener('input', () => {
+  promptEl.style.height = 'auto';
+  promptEl.style.height = Math.min(promptEl.scrollHeight, 200) + 'px';
+});
+promptEl.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); generate(); }
+});
+
+function useExample() {
+  promptEl.value = 'рыжий кот на фоне солнечного леса, детализированная шерсть, кинематографичный свет';
+  promptEl.dispatchEvent(new Event('input'));
+  promptEl.focus();
+}
+
+/* ---- generate ---- */
+async function generate() {
+  const p = promptEl.value.trim();
+  if (busy || curJob || !modelReady || !p) return;
+  const body = { prompt: p, resolution: res, steps: steps };
+  if (seed !== null) body.seed = seed;
+  $('genBtn').disabled = true;
+  $('genBtn').textContent = 'Отправка…';
+  try {
+    const r = await fetch(API + '/api/generate', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    if (!r.ok) {
+      let msg = 'ошибка ' + r.status;
+      try { msg = (await r.json()).detail || msg; } catch (e) {}
+      toast(msg); updateBtn(); return;
+    }
+    const j = await r.json();
+    curJob = j.id;
+    showJobCard('в очереди…', '', 0);
+    updateBtn();
+  } catch (e) {
+    toast('нет связи с сервером'); updateBtn();
+  }
+}
+
+function showJobCard(phase, step, pct, previewUrl) {
+  $('jobCard').classList.add('show');
+  $('jobPhase').textContent = {'encoding_text':'кодирование промпта','inference':'генерация','decoding':'декодирование','в очереди…':'в очереди…'}[phase] || phase;
+  $('jobStep').textContent = step;
+  $('jobBar').style.width = pct + '%';
+  if (previewUrl) {
+    $('jobPrev').style.display = 'block';
+    $('jobPrevImg').src = previewUrl + '?t=' + Date.now();
+  }
+}
+
+/* ---- SSE events ---- */
+const es = new EventSource(API + '/api/events');
+es.onmessage = e => {
+  const ev = JSON.parse(e.data);
+  if (ev.type === 'hello') { modelReady = ev.ready; busy = ev.busy; updateBtn(); }
+  else if (ev.type === 'ready') { modelReady = true; updateBtn(); toast('модель готова'); }
+  else if (ev.type === 'job_start' && ev.id === curJob) showJobCard('в очереди…', '', 0);
+  else if (ev.type === 'progress' && ev.id === curJob) showJobCard(ev.phase, 'шаг ' + ev.step, ev.pct);
+  else if (ev.type === 'preview' && ev.id === curJob) showJobCard($('jobPhase').textContent, $('jobStep').textContent, parseInt($('jobBar').style.width)||0, API + ev.url);
+  else if (ev.type === 'job_done' && ev.id === curJob) {
+    hideJobCard(); busy = false; updateBtn(); curJob = null;
+    toast('готово за ' + ev.total + 's'); loadGallery();
+  }
+  else if (ev.type === 'job_error' && ev.id === curJob) {
+    busy = false; updateBtn(); curJob = null;
+    $('jobErr').style.display = 'block'; $('jobErr').textContent = ev.error;
+    setTimeout(hideJobCard, 6000);
+  }
+};
+
+function hideJobCard() {
+  $('jobCard').classList.remove('show');
+  $('jobPrev').style.display = 'none';
+  $('jobErr').style.display = 'none';
+}
+function updateBtn() {
+  const generating = busy || curJob !== null;
+  $('genBtn').disabled = generating || !modelReady || !promptEl.value.trim();
+  $('genBtn').textContent = generating ? 'Генерация…' : !modelReady ? 'Загрузка модели…' : 'Generate';
+}
+promptEl.addEventListener('input', updateBtn);
+
+/* ---- gallery ---- */
+async function loadGallery() {
+  const r = await fetch(API + '/api/gallery');
+  const j = await r.json();
+  $('galCount').textContent = j.files.length;
+  $('empty').style.display = j.files.length ? 'none' : 'block';
+  const grid = $('grid');
+  grid.innerHTML = '';
+  j.files.forEach(f => {
+    const d = document.createElement('div');
+    d.className = 'tile';
+    d.innerHTML = `<img loading="lazy" src="${API}${f.url}" alt="">`;
+    d.onclick = () => openLb(f);
+    grid.appendChild(d);
+  });
+}
+
+function openLb(f) {
+  $('lbImg').src = API + f.url;
+  $('lbDl').href = API + f.url;
+  $('lbDl').download = f.name;
+  $('lbMeta').textContent = f.name;
+  $('lb').classList.add('show');
+}
+function closeLb() { $('lb').classList.remove('show'); }
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLb(); });
+
+function toast(msg) {
+  const t = $('toast');
+  t.textContent = msg; t.style.display = 'block';
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.style.display = 'none', 3000);
+}
+
+/* ---- status poll for init ---- */
+async function pollStatus() {
+  try {
+    const r = await fetch(API + '/api/status');
+    const s = await r.json();
+    busy = s.busy;
+    // fallback если SSE отвалился: проверяем свою задачу напрямую
+    if (curJob && !busy) {
+      const jr = await fetch(API + '/api/jobs/' + curJob);
+      const jj = await jr.json();
+      if (jj.status === 'done') {
+        hideJobCard(); curJob = null; busy = false;
+        toast('готово за ' + (jj.total || '?') + 's'); loadGallery();
+      } else if (jj.status === 'error') {
+        curJob = null; busy = false;
+        $('jobErr').style.display = 'block'; $('jobErr').textContent = jj.error || 'ошибка';
+        setTimeout(hideJobCard, 6000);
+      }
+    }
+    modelReady = s.ready;
+    updateBtn();
+    if (!s.ready && !s.init_error) $('genBtn').textContent = `Загрузка модели… ${s.init_elapsed}s`;
+    if (s.init_error) $('genBtn').textContent = 'Ошибка init';
+  } catch (e) {}
+  setTimeout(pollStatus, 2000);
+}
+
+loadGallery();
+pollStatus();
+updateBtn();
+</script>
+</body>
+</html>

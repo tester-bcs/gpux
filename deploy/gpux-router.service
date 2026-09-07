@@ -1,0 +1,14 @@
+[Unit]
+Description=gpux router — GPU multiplexer
+After=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/gpux-router
+ExecStart=/usr/bin/python3 /opt/gpux-router/serve.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

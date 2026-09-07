@@ -1,0 +1,6 @@
+# gpux node registry — copy to nodes.yaml and edit on the router host
+nodes:
+  - name: ms-7c75
+    url: http://100.64.0.1:8095
+  # - name: gpu-node-2
+  #   url: http://100.64.0.x:8095
