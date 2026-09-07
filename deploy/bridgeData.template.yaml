@@ -1,0 +1,16 @@
+# AI Horde worker config for gpux idle-farming
+# After getting your Horde API key, replace <KEY> below.
+worker_name: gpux-ms7c75
+api_key: "<KEY>"
+max_threads: 1
+queue_size: 1
+models:
+  - "AlbedoBase XL (SDXL)"
+max_models_to_download: 1
+limit_models: true
+allow_img2img: true
+allow_painting: true
+allow_controlnet: false
+allow_lora: false
+max_power: 24
+max_resolution: 512x512

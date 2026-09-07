@@ -1,0 +1,13 @@
+[Unit]
+Description=gpux idle watcher (farms Horde kudos when node is idle)
+After=network-online.target gpux-node.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/avk/gpux-node
+ExecStart=/usr/bin/python3 /home/avk/gpux-node/idle_worker.py
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target
