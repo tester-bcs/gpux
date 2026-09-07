@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 HERE = Path(__file__).parent
 NODES_FILE = HERE / 'nodes.yaml'
-WEB_DIR = HERE.parent / 'web'
+WEB_DIR = HERE / 'web'
 HEALTH_TTL = 5.0          # seconds a health snapshot stays fresh
 JOB_TIMEOUT = 900          # hard cap for one generation proxying
 
