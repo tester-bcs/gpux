@@ -180,7 +180,12 @@ input[type=text].seedin {
 </div>
 
 <div class="gallery-wrap">
-  <div class="gal-head"><h2>Галерея</h2><span class="chip" id="galCount" style="cursor:default"></span></div>
+  <div class="gal-head"><h2>Галерея</h2>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <a class="chip" href="join.html" style="text-decoration:none">+ Подключить машину</a>
+      <span class="chip" id="galCount" style="cursor:default"></span>
+    </div>
+  </div>
   <div class="grid" id="grid"></div>
   <div class="empty" id="empty">Пока пусто. Попробуй: <em onclick="useExample()">рыжий кот на фоне солнечного леса</em></div>
 </div>

@@ -312,6 +312,32 @@ async def nodes_list():
     await refresh_health()
     return {'nodes': [{'name': n['name'], 'url': n['url'], **_health.get(n['name'], {})} for n in NODES]}
 
+@app.post("/api/nodes/register")
+async def nodes_register(request: Request):
+    """Onboarding: a new GPU machine registers itself (name + url).
+    Persisted to nodes.yaml and used immediately."""
+    try:
+        body = await request.json()
+        name = str(body.get('name', '')).strip()
+        url = str(body.get('url', '')).strip().rstrip('/')
+        if not name or not url.startswith('http'):
+            raise ValueError('need {name, url}')
+        if any(n['name'] == name for n in NODES):
+            return {'ok': True, 'message': f'node {name} already registered'}
+    except ValueError as e:
+        raise HTTPException(400, detail=str(e))
+
+    NODES.append({'name': name, 'url': url})
+    # persist
+    import yaml as _yaml
+    _yaml.safe_dump({'nodes': NODES}, open(NODES_FILE, 'w'), sort_keys=False)
+    await refresh_health()
+    h = _health.get(name, {})
+    return {'ok': True, 'message': f'node {name} registered',
+            'reachable': h.get('ok', False),
+            'ready': h.get('ready', False),
+            'detail': h.get('detail', {})}
+
 # ---------------- frontend ----------------
 app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
 
