@@ -160,6 +160,10 @@ async def api_status():
         "init_error": state['init_error'],
     }
 
+@app.get("/api/capabilities")
+async def api_capabilities():
+    return config.CAPABILITIES
+
 @app.get("/api/events")
 async def api_events(request: Request):
     q = queue.Queue()

@@ -12,8 +12,11 @@ VENV_ACTIVATE = '/mnt/hdd/data/wan2gp_env/bin/activate'
 LISTEN_HOST = '0.0.0.0'
 LISTEN_PORT = 8095
 
-# UI static files (shipped with gpux repo)
-WEB_DIR = Path(__file__).parent.parent / 'web'
+# UI static files (shipped with gpux repo; repo layout: ../web, deployed: ./static)
+import os as _os
+_REPO_WEB = Path(__file__).resolve().parent.parent / 'web'
+_LOCAL_STATIC = Path(__file__).resolve().parent / 'static'
+WEB_DIR = _REPO_WEB if _REPO_WEB.exists() else _LOCAL_STATIC
 
 # model preset used for generation
 MODEL_TYPE = 'flux2_klein_4b'
@@ -23,3 +26,12 @@ WAN2GP_ARGS = ["--attention", "sdpa", "--profile", "4"]
 
 # tip: put hot checkpoints (transformer, text encoder, vae) on the fastest
 # local disk and symlink them into WAN2GP_ROOT/ckpts — init drops from ~47s to ~32s
+
+# what this node can serve (router routes by these)
+CAPABILITIES = {
+    "backends": ["wangp"],
+    "models": [MODEL_TYPE],
+    "modalities": ["image"],
+    "vram_gb": 16,
+    "max_resolution": "1536x1152",
+}

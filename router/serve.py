@@ -37,38 +37,54 @@ app = FastAPI(title="gpux router")
 _health = {}  # name -> {"ok": bool, "ready": bool, "busy": bool, "queue": int, "ts": float, "detail": {}}
 
 async def refresh_health():
-    """Poll every node /api/status (cheap) and cache."""
+    """Poll every node /api/status (cheap) + /api/capabilities and cache."""
     async with httpx.AsyncClient(timeout=4) as client:
         async def one(n):
             try:
                 r = await client.get(n['url'] + '/api/status')
                 d = r.json()
+                caps = {}
+                try:
+                    rc = await client.get(n['url'] + '/api/capabilities')
+                    if rc.status_code == 200:
+                        caps = rc.json()
+                except Exception:
+                    pass
                 return n['name'], {'ok': True, 'ready': d.get('ready', False),
                                    'busy': d.get('busy', False), 'queue': d.get('queue', 0),
-                                   'detail': d, 'ts': time.time()}
+                                   'detail': d, 'caps': caps, 'ts': time.time()}
             except Exception as e:
                 return n['name'], {'ok': False, 'ready': False, 'busy': True,
-                                   'queue': 999, 'detail': {'error': str(e)}, 'ts': time.time()}
+                                   'queue': 999, 'detail': {'error': str(e)}, 'caps': {}, 'ts': time.time()}
         results = await asyncio.gather(*(one(n) for n in NODES))
     for name, snap in results:
         _health[name] = snap
 
-async def pick_node():
-    """Return (node, health) of best free node, refreshing if stale."""
+async def pick_node(modality: str = "image", model: str | None = None):
+    """Return (node, health) of best node that can serve the request."""
     if not _health or min((h['ts'] for h in _health.values()), default=0) < time.time() - HEALTH_TTL:
         await refresh_health()
-    # prefer: ready, not busy, smallest queue; fall back to ready-but-busy only if nothing free
-    free = [(n, _health[n['name']]) for n in NODES
-            if _health.get(n['name'], {}).get('ok') and _health[n['name']]['ready']
-            and not _health[n['name']]['busy'] and _health[n['name']]['queue'] == 0]
+
+    def can_serve(n, h):
+        caps = h.get('caps') or {}
+        # node without capabilities endpoint: assume image-only wangp node (backward compat)
+        if not caps:
+            return modality == "image" and (model is None or model == "flux2_klein_4b")
+        return (modality in (caps.get('modalities') or [])
+                and (model is None or model in (caps.get('models') or [])))
+
+    eligible = [(n, _health[n['name']]) for n in NODES
+                if _health.get(n['name'], {}).get('ok') and can_serve(n, _health[n['name']])]
+    if not eligible:
+        want = f"model={model or 'any'} modality={modality}"
+        raise HTTPException(503, detail=f'no GPU nodes can serve {want}')
+
+    free = [(n, h) for n, h in eligible
+            if h['ready'] and not h['busy'] and h['queue'] == 0]
     if free:
         return free[0]
-    ready_busy = [(n, _health[n['name']]) for n in NODES
-                  if _health.get(n['name'], {}).get('ok') and _health[n['name']]['ready']]
-    if ready_busy:
-        ready_busy.sort(key=lambda t: (t[1]['busy'], t[1]['queue']))
-        return ready_busy[0]
-    raise HTTPException(503, detail='no GPU nodes available')
+    eligible.sort(key=lambda t: (t[1]['busy'], t[1]['queue']))
+    return eligible[0]
 
 def node_url(name: str) -> str:
     for n in NODES:
@@ -85,6 +101,8 @@ class GenRequest(BaseModel):
     resolution: str = "1280x960"
     steps: int = 20
     seed: int | None = None
+    modality: str = "image"
+    model: str | None = None
 
 # ---------------- routes ----------------
 @app.get("/api/status")
@@ -97,7 +115,7 @@ async def status():
 
 @app.post("/api/generate")
 async def generate(req: GenRequest):
-    node, h = await pick_node()
+    node, h = await pick_node(req.modality, req.model)
     body = req.model_dump()
     async with httpx.AsyncClient(timeout=15) as client:
         r = await client.post(node['url'] + '/api/generate', json=body)
