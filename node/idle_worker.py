@@ -53,7 +53,7 @@ def start_worker():
     Path(HERE / '.farming').touch()
     log('farming flag set, starting horde-worker-reGen...')
     worker_proc = subprocess.Popen(
-        ['./venv/bin/python', 'bridge.py'],
+        ['./venv/bin/python', '-u', 'run_worker.py'],
         cwd=str(REGEN_DIR), env=env,
         stdout=open(LOG, 'a'), stderr=subprocess.STDOUT,
         start_new_session=True)
@@ -89,7 +89,7 @@ def main():
     # cleanup orphaned state from previous run
     if (HERE / '.farming').exists():
         log('removing stale farming flag, killing orphaned bridge.py if any')
-        subprocess.run(['pkill', '-f', 'horde-worker-reGen/bridge.py'], check=False)
+        subprocess.run(['pkill', '-f', 'horde-worker-reGen/run_worker.py'], check=False)
         (HERE / '.farming').unlink(missing_ok=True)
     log(f'idle watcher started (idle_min={IDLE_MIN}, node={NODE_URL})')
     idle_since = time.time()
