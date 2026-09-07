@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""gpux node config — mini-pc (Илья, RTX 5070 Ti 16GB)."""
+"""gpux node config — mini-pc (Илья, RTX 5070 Ti 16GB).
+
+Deploy: copy this file as node/config.py on the mini-pc machine.
+"""
 from pathlib import Path
 
 # WanGP installation root (contains wgp.py, shared/, ckpts/)
@@ -30,5 +33,5 @@ CAPABILITIES = {
     "modalities": ["image"],
     "vram_gb": 16,
     "max_resolution": "1536x1152",
-    "hostname": "ms-7c75",
+    "hostname": "mini-pc",
 }
