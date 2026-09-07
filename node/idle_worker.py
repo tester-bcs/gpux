@@ -49,7 +49,9 @@ def start_worker():
     env = os.environ.copy()
     env['NO_PROXY'] = '*'
     env['HF_HOME'] = str(REGEN_DIR / 'hf_cache')
-    log('starting horde-worker-reGen...')
+    # mark node as farming (router stops routing tasks here until flag removed)
+    Path(HERE / '.farming').touch()
+    log('farming flag set, starting horde-worker-reGen...')
     worker_proc = subprocess.Popen(
         ['./venv/bin/python', 'bridge.py'],
         cwd=str(REGEN_DIR), env=env,
@@ -75,12 +77,20 @@ def stop_worker():
         except Exception:
             pass
     worker_proc = None
-    log('worker stopped, VRAM free')
+    # wait VRAM actually freed, then un-mark node
+    time.sleep(5)
+    (HERE / '.farming').unlink(missing_ok=True)
+    log('worker stopped, farming flag removed, VRAM free')
 
 def worker_alive():
     return worker_proc is not None and worker_proc.poll() is None
 
 def main():
+    # cleanup orphaned state from previous run
+    if (HERE / '.farming').exists():
+        log('removing stale farming flag, killing orphaned bridge.py if any')
+        subprocess.run(['pkill', '-f', 'horde-worker-reGen/bridge.py'], check=False)
+        (HERE / '.farming').unlink(missing_ok=True)
     log(f'idle watcher started (idle_min={IDLE_MIN}, node={NODE_URL})')
     idle_since = time.time()
     while True:

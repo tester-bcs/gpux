@@ -30,6 +30,8 @@ OUTPUTS = Path(WAN2GP_ROOT) / 'outputs'
 PREVIEWS = HERE.parent / 'previews'
 PREVIEWS.mkdir(parents=True, exist_ok=True)
 ALLOWED_EXT = {'.jpg', '.jpeg', '.png', '.webp'}
+# idle-farming flag: when present, node reports not-ready (Horde worker holds VRAM)
+FARMING_FLAG = HERE / '.farming'
 
 app = FastAPI(title="gpux node")
 
@@ -153,8 +155,11 @@ async def api_generate(req: GenRequest):
 
 @app.get("/api/status")
 async def api_status():
+    farming = FARMING_FLAG.exists()
     return {
-        "ready": state['model_ready'], "busy": state['busy'],
+        "ready": state['model_ready'] and not farming,
+        "farming": farming,
+        "busy": state['busy'],
         "queue": state['queue_len'], "current": state['current_job'],
         "init_elapsed": round(time.time() - state['init_started'], 1),
         "init_error": state['init_error'],
