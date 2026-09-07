@@ -167,11 +167,13 @@ def free_vram_gb():
 @app.get("/api/status")
 async def api_status():
     farming = FARMING_FLAG.exists()
+    offline_flag = (HERE / '.offline').exists()
     free_gb, total_gb = free_vram_gb()
     vram_ok = free_gb is None or free_gb >= config.MIN_FREE_VRAM_GB
     return {
-        "ready": state['model_ready'] and not farming and vram_ok,
+        "ready": state['model_ready'] and not farming and vram_ok and not offline_flag,
         "farming": farming,
+        "offline": offline_flag,
         "busy": state['busy'],
         "queue": state['queue_len'], "current": state['current_job'],
         "init_elapsed": round(time.time() - state['init_started'], 1),

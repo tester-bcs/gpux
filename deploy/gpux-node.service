@@ -1,0 +1,21 @@
+[Unit]
+Description=gpux node (WanGP generator on mini-pc)
+After=network-online.target
+
+# Resource limits: node must not starve the VM / desktop
+MemoryMax=14G
+CPUQuota=40%
+CPUWeight=40
+IOWeight=40
+OOMScoreAdjust=200
+
+[Service]
+Type=simple
+WorkingDirectory=/home/avk/gpux-node
+ExecStart=/home/avk/Wan2GP/venv/bin/python /home/avk/gpux-node/serve.py
+Restart=always
+RestartSec=10
+Environment=NO_PROXY=*
+
+[Install]
+WantedBy=default.target
