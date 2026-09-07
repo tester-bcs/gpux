@@ -333,7 +333,11 @@ function openLb(f) {
   $('lbImg').src = API + f.url;
   $('lbDl').href = API + f.url;
   $('lbDl').download = f.name;
-  $('lbMeta').textContent = f.name;
+  const mb = f.size ? (f.size / 1048576).toFixed(2) + ' МБ' : '';
+  $('lbMeta').textContent = f.name + (mb ? '  ·  ' + mb : '');
+  $('lbDl').onclick = () => {
+    toast('закачка пошла' + (mb ? ' (' + mb + ')' : '') + ' — файл появится в загрузках');
+  };
   $('lb').classList.add('show');
 }
 function closeLb() { $('lb').classList.remove('show'); }
