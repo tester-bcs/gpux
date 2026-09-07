@@ -8,7 +8,7 @@ Reuses the same node for the whole job (model stays loaded in VRAM).
 
 Config: nodes.yaml next to this file.
 """
-import asyncio, json, os, time, base64
+import asyncio, json, os, time, base64, uuid
 from pathlib import Path
 
 import httpx
@@ -33,6 +33,16 @@ def load_nodes():
 
 NODES = load_nodes()
 usage_db.init()
+
+# ---- Horde (elastic overflow for drafts) ----
+_horde_cfg = (yaml.safe_load(open(NODES_FILE)) or {}).get('horde') or {}
+HORDE = None
+if _horde_cfg.get('enabled'):
+    from horde import HordeClient
+    HORDE = HordeClient(_horde_cfg.get('api_url', 'https://aihorde.net/api/v2'),
+                        _horde_cfg.get('api_key', '0000000000'),
+                        _horde_cfg.get('models') or [])
+_horde_jobs = {}  # jid -> {"horde_id", "status", "file", "url", "model", "started"}
 
 def auth_user(request: Request) -> str:
     """Extract username from Basic auth header (nginx passes it)."""
@@ -116,6 +126,7 @@ class GenRequest(BaseModel):
     seed: int | None = None
     modality: str = "image"
     model: str | None = None
+    draft: bool = False
 
 # ---------------- routes ----------------
 @app.get("/api/status")
@@ -128,6 +139,28 @@ async def status():
 
 @app.post("/api/generate")
 async def generate(req: GenRequest, request: Request):
+    user = auth_user(request)
+    # ---- Horde overflow for drafts ----
+    if req.draft:
+        if not HORDE:
+            raise HTTPException(503, detail='draft overflow disabled (horde not enabled)')
+        try:
+            sub = await asyncio.to_thread(
+                HORDE.submit, req.prompt.strip(), req.steps, req.resolution, req.seed)
+        except Exception as e:
+            raise HTTPException(502, detail=f'horde submit failed: {e}')
+        jid = uuid.uuid4().hex[:12]
+        _horde_jobs[jid] = {'horde_id': sub['horde_id'], 'status': 'queued',
+                            'user': user, 'model': 'aihorde',
+                            'resolution': req.resolution, 'steps': req.steps,
+                            'seed': req.seed, 'started': time.time()}
+        try:
+            usage_db.record_job(jid, user, 'aihorde', 'aihorde', req.resolution,
+                                req.steps, req.seed, time.time())
+        except Exception:
+            pass
+        return {'id': jid, 'node': 'aihorde', 'queue': 0, 'busy': False, 'draft': True}
+
     node, h = await pick_node(req.modality, req.model)
     body = req.model_dump()
     async with httpx.AsyncClient(timeout=15) as client:
@@ -139,7 +172,7 @@ async def generate(req: GenRequest, request: Request):
     if jid:
         _job_node[jid] = node['name']
         try:
-            usage_db.record_job(jid, auth_user(request), node['name'],
+            usage_db.record_job(jid, user, node['name'],
                                 req.model or 'default', req.resolution, req.steps,
                                 req.seed, time.time())
         except Exception as e:
@@ -149,6 +182,35 @@ async def generate(req: GenRequest, request: Request):
 
 @app.get("/api/jobs/{jid}")
 async def job_status(jid: str):
+    # Horde jobs live locally
+    if jid in _horde_jobs:
+        hj = _horde_jobs[jid]
+        if hj['status'] in ('queued', 'running'):
+            try:
+                res = await asyncio.to_thread(HORDE.check, hj['horde_id'])
+                hj['status'] = res['status']
+                if res['status'] == 'done':
+                    hj['file'] = res['file']; hj['url'] = res['url']; hj['model'] = res['model']
+                    hj['total_s'] = round(time.time() - hj['started'], 1)
+                    try:
+                        usage_db.finish_job(jid, 'done', hj['total_s'])
+                    except Exception:
+                        pass
+                elif res['status'] == 'error':
+                    try:
+                        usage_db.finish_job(jid, 'error', None)
+                    except Exception:
+                        pass
+            except Exception as e:
+                hj['status'] = 'error'; hj['error'] = str(e)
+        out = {'status': hj['status']}
+        if hj['status'] == 'done':
+            out.update({'files': [hj['file']], 'url': hj['url'],
+                        'total': hj.get('total_s'), 'model': hj.get('model')})
+        if hj.get('error'):
+            out['error'] = hj['error']
+        return out
+
     name = _job_node.get(jid)
     if not name:
         raise HTTPException(404, detail='unknown job')
@@ -192,9 +254,17 @@ async def events(request: Request):
                                       'X-Accel-Buffering': 'no'})
 
 @app.get("/api/gallery")
-async def gallery(node: str | None = None):
-    """Merged gallery from all reachable nodes."""
+async def gallery(limit: int = 60):
+    """Merged gallery from all reachable nodes + local horde artifacts."""
     out = []
+    # horde artifacts (local)
+    from horde import ARTIFACTS
+    if ARTIFACTS.exists():
+        for f in sorted(ARTIFACTS.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+            if f.suffix.lower() in ('.webp', '.png', '.jpg', '.jpeg'):
+                out.append({'name': f.name, 'url': f'/api/image/{f.name}',
+                            'size': f.stat().st_size, 'mtime': f.stat().st_mtime,
+                            'node': 'aihorde'})
     async with httpx.AsyncClient(timeout=6) as client:
         async def one(n):
             try:
@@ -209,11 +279,19 @@ async def gallery(node: str | None = None):
     for l in lists:
         out.extend(l)
     out.sort(key=lambda f: f.get('mtime', 0), reverse=True)
-    return {'files': out[:60]}
+    return {'files': out[:limit]}
 
 @app.get("/api/image/{name}")
 @app.get("/api/previews/{name}")
 async def media(name: str, request: Request):
+    # horde artifacts live locally
+    if name.startswith('horde_'):
+        from horde import ARTIFACTS
+        f = ARTIFACTS / name
+        if f.exists():
+            mt = 'image/webp' if f.suffix == '.webp' else 'image/png'
+            return Response(content=f.read_bytes(), media_type=mt)
+        raise HTTPException(404)
     # previews/images live per node; try nodes in order (gallery tells which one via ?node=)
     prefer = request.query_params.get('node')
     order = [prefer] if prefer else []

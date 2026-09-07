@@ -144,6 +144,7 @@ input[type=text].seedin {
       <div class="chip" id="resChip">▦ <span class="val" id="resVal">1280×960</span></div>
       <div class="chip" id="stepsChip">◍ <span class="val" id="stepsVal">20</span> шагов</div>
       <div class="chip" id="seedChip">⚄ <span class="val" id="seedVal">random</span></div>
+      <div class="chip" id="draftChip" title="черновик через публичную сеть AI Horde — промпт уйдёт наружу">☁ draft</div>
       <button class="gen-btn" id="genBtn" disabled>Generate</button>
     </div>
 
@@ -211,7 +212,11 @@ $('resChip').onclick = () => togglePop('resPop');
 $('stepsChip').onclick = () => togglePop('stepsPop');
 $('seedChip').onclick = () => togglePop('seedPop');
 
-let res = '1280x960', steps = 20, seed = null;
+let res = '1280x960', steps = 20, seed = null, draft = false;
+$('draftChip').onclick = () => {
+  draft = !draft;
+  $('draftChip').classList.toggle('active', draft);
+};
 $('resPresets').onclick = e => {
   if (!e.target.dataset.r) return;
   res = e.target.dataset.r;
@@ -249,7 +254,7 @@ function useExample() {
 async function generate() {
   const p = promptEl.value.trim();
   if (busy || curJob || !modelReady || !p) return;
-  const body = { prompt: p, resolution: res, steps: steps };
+  const body = { prompt: p, resolution: res, steps: steps, draft: draft };
   if (seed !== null) body.seed = seed;
   $('genBtn').disabled = true;
   $('genBtn').textContent = 'Отправка…';
