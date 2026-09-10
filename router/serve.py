@@ -374,15 +374,20 @@ async def media(name: str, request: Request):
         raise HTTPException(404)
     path = request.url.path  # /api/image/... or /api/previews/...
     prefer = request.query_params.get('node')
-    # images -> central gallery service; previews stay per-node (transient)
+    # images/audio -> central gallery service; previews stay per-node (transient)
     if GALLERY_URL and path.startswith('/api/image/'):
+        fwd = {}
+        if request.headers.get('range'):
+            fwd['Range'] = request.headers['range']   # <audio>/<video> seeking
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.get(f'{GALLERY_URL}{path}',
+            async with httpx.AsyncClient(timeout=NODE_TIMEOUT) as client:
+                r = await client.get(f'{GALLERY_URL}{path}', headers=fwd,
                                      params={'node': prefer} if prefer else None)
-                if r.status_code == 200:
-                    return Response(content=r.content,
-                                    media_type=r.headers.get('content-type', 'image/jpeg'))
+                if r.status_code in (200, 206):
+                    keep = ('content-type', 'content-length', 'content-range',
+                            'accept-ranges', 'cache-control')
+                    hdrs = {k: v for k, v in r.headers.items() if k.lower() in keep}
+                    return Response(content=r.content, status_code=r.status_code, headers=hdrs)
         except Exception:
             pass
         raise HTTPException(404)

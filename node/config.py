@@ -54,7 +54,7 @@ AUDIO_MODELS = {
         "wangp_model_type": "chatterbox", "kind": "tts", "output_ext": "wav",
         "languages": ["en", "es", "fr", "de", "it", "pt", "pl", "ru", "zh", "ja"],
         "voice_ref": True, "min_free_vram_gb": 3.0, "load_time_s": 20,
-        "defaults": {"audio_prompt_type": "A", "model_mode": "en", "temperature": 0.8,
+        "defaults": {"audio_prompt_type": "", "model_mode": "en", "temperature": 0.8,
                      "num_inference_steps": 0, "video_length": 0,
                      "custom_settings": {"exaggeration": 0.5, "pace": 0.5}},
     },

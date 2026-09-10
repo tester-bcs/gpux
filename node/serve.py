@@ -360,6 +360,7 @@ async def api_generate(req: GenRequest):
                 raise HTTPException(400, f"{req.model} does not support voice_ref")
             input_file = _decode_audio_ref(req.voice_ref, jid)
             settings["audio_guide"] = str(input_file)
+            settings["audio_prompt_type"] = "A"   # use the reference voice
         meta = {"prompt": req.prompt.strip(), "seed": req.seed,
                 "steps": settings["num_inference_steps"], "modality": "audio",
                 "kind": am["kind"], "model": req.model, "duration_s": dur}
