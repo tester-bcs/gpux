@@ -145,6 +145,24 @@ async def image(name: str, node: str | None = None):
     raise HTTPException(404)
 
 
+@app.delete("/api/image/{name}")
+async def delete_image(name: str, node: str | None = None,
+                       x_gpux_token: str = Header(default="")):
+    if TOKEN and x_gpux_token != TOKEN:
+        raise HTTPException(401, "bad token")
+    name = _safe_seg(name)
+    dirs = [STORE / _safe_seg(node)] if node else [d for d in STORE.iterdir() if d.is_dir()]
+    removed = 0
+    for d in dirs:
+        for p in (d / name, d / (name + ".json")):
+            if p.is_file():
+                p.unlink()
+                removed += 1
+    if not removed:
+        raise HTTPException(404)
+    return {"ok": True, "removed": removed, "name": name}
+
+
 @app.get("/api/meta/{name}")
 async def meta_one(name: str, node: str | None = None):
     name = _safe_seg(name)

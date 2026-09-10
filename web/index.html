@@ -140,6 +140,20 @@ input[type=text].seedin {
   margin-bottom: 6px;
 }
 .prompt-pop .pp-label.foot { margin: 8px 0 0; }
+.ctxmenu {
+  position: fixed; z-index: 80; min-width: 168px; background: var(--card2);
+  border: 1px solid #3a3a3a; border-radius: 10px; padding: 5px;
+  box-shadow: 0 12px 36px #000000b0; display: none;
+}
+.ctxmenu.show { display: block; }
+.ctxmenu button {
+  display: flex; width: 100%; gap: 9px; align-items: center; background: none;
+  border: none; color: var(--text); font-size: 13px; padding: 8px 10px;
+  border-radius: 7px; cursor: pointer; text-align: left;
+}
+.ctxmenu button:hover { background: var(--card); }
+.ctxmenu button.danger { color: #ff6b6b; }
+.ctxmenu .sep { height: 1px; background: #333; margin: 4px 6px; }
 .empty { color: #555; font-size: 14px; text-align: center; padding: 50px 0; }
 .empty em { color: var(--dim); cursor: pointer; font-style: normal; border-bottom: 1px dashed #444; }
 .empty em:hover { color: var(--accent); border-color: var(--accent); }
@@ -255,6 +269,7 @@ input[type=text].seedin {
 </div>
 <div class="toast" id="toast"></div>
 <div class="prompt-pop" id="promptPop"></div>
+<div class="ctxmenu" id="ctxMenu"></div>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -539,6 +554,7 @@ async function loadGallery() {
   grid.innerHTML = '';
   j.files.forEach(f => {
     const d = document.createElement('div');
+    d.oncontextmenu = e => openCtx(e, f, d);
     if (f.modality === 'audio') {
       d.className = 'tile audio';
       const dur = f.duration_s ? ` · ${f.duration_s}с` : '';
@@ -567,6 +583,55 @@ async function loadGallery() {
     grid.appendChild(d);
   });
 }
+
+/* ---- right-click context menu on tiles ---- */
+let ctxTarget = null;
+function openCtx(e, f, tileEl) {
+  e.preventDefault();
+  hidePromptPop();
+  ctxTarget = { f, el: tileEl };
+  const m = $('ctxMenu');
+  m.innerHTML =
+    `<button data-a="open">🔍 Открыть</button>` +
+    `<button data-a="dl">⬇ Скачать</button>` +
+    `<div class="sep"></div>` +
+    `<button data-a="del" class="danger">🗑 Удалить</button>`;
+  m.classList.add('show');
+  const mw = 180, mh = m.offsetHeight;
+  let x = e.clientX, y = e.clientY;
+  if (x + mw > innerWidth - 6) x = innerWidth - mw - 6;
+  if (y + mh > innerHeight - 6) y = innerHeight - mh - 6;
+  m.style.left = Math.max(6, x) + 'px';
+  m.style.top = Math.max(6, y) + 'px';
+}
+function hideCtx() { $('ctxMenu').classList.remove('show'); ctxTarget = null; }
+$('ctxMenu').onclick = async e => {
+  const a = e.target.closest('button') && e.target.closest('button').dataset.a;
+  if (!a || !ctxTarget) return;
+  const { f, el } = ctxTarget;
+  hideCtx();
+  if (a === 'open') openLb(f);
+  else if (a === 'dl') {
+    const link = document.createElement('a');
+    link.href = API + f.url; link.download = f.name;
+    document.body.appendChild(link); link.click(); link.remove();
+  } else if (a === 'del') {
+    try {
+      const u = API + '/api/image/' + encodeURIComponent(f.name) +
+                (f.node ? '?node=' + encodeURIComponent(f.node) : '');
+      const r = await fetch(u, { method: 'DELETE' });
+      if (!r.ok) { toast('не удалить: ' + r.status); return; }
+      el.remove();
+      const n = Math.max(0, (+$('galCount').textContent || 1) - 1);
+      $('galCount').textContent = n;
+      $('empty').style.display = n ? 'none' : 'block';
+      toast('удалено');
+    } catch (err) { toast('нет связи с сервером'); }
+  }
+};
+document.addEventListener('click', e => { if (!e.target.closest('.ctxmenu')) hideCtx(); });
+document.addEventListener('scroll', hideCtx, true);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') hideCtx(); });
 
 function openLb(f) {
   const isAudio = f.modality === 'audio';

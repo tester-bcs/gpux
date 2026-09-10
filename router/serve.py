@@ -29,6 +29,7 @@ JOB_TIMEOUT = 900          # hard cap for one generation proxying
 # central gallery service (gpux-gallery). When set, /api/gallery and
 # /api/image are backed by it instead of proxying each node directly.
 GALLERY_URL = os.environ.get('GPUX_GALLERY_URL', '').rstrip('/')
+GALLERY_TOKEN = os.environ.get('GPUX_GALLERY_TOKEN', '')
 ROUTER_HOST = os.environ.get('GPUX_ROUTER_HOST', '127.0.0.1')
 ROUTER_PORT = int(os.environ.get('GPUX_ROUTER_PORT', '8096'))
 HEALTH_TIMEOUT = float(os.environ.get('GPUX_HEALTH_TIMEOUT', '4'))
@@ -403,6 +404,30 @@ async def media(name: str, request: Request):
             except Exception:
                 continue
     raise HTTPException(404)
+
+@app.delete("/api/image/{name}")
+async def delete_media(name: str, request: Request):
+    user = auth_user(request)   # nginx basic-auth already gates this; single shared cred for now
+    prefer = request.query_params.get('node')
+    if name.startswith('horde_'):
+        from horde import ARTIFACTS
+        f = ARTIFACTS / name
+        if not f.exists():
+            raise HTTPException(404)
+        f.unlink()
+        return {'ok': True, 'name': name, 'by': user}
+    if not GALLERY_URL:
+        raise HTTPException(503, detail='gallery service not configured')
+    try:
+        async with httpx.AsyncClient(timeout=NODE_TIMEOUT) as client:
+            r = await client.delete(f'{GALLERY_URL}/api/image/{name}',
+                                    headers={'X-Gpux-Token': GALLERY_TOKEN},
+                                    params={'node': prefer} if prefer else None)
+    except Exception as e:
+        raise HTTPException(502, detail=f'gallery unreachable: {e}')
+    if r.status_code != 200:
+        raise HTTPException(r.status_code, detail=r.text)
+    return {'ok': True, 'name': name, 'by': user, **r.json()}
 
 @app.get("/api/nodes")
 async def nodes_list():
