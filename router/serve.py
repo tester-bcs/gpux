@@ -32,6 +32,7 @@ GALLERY_URL = os.environ.get('GPUX_GALLERY_URL', '').rstrip('/')
 ROUTER_HOST = os.environ.get('GPUX_ROUTER_HOST', '127.0.0.1')
 ROUTER_PORT = int(os.environ.get('GPUX_ROUTER_PORT', '8096'))
 HEALTH_TIMEOUT = float(os.environ.get('GPUX_HEALTH_TIMEOUT', '4'))
+NODE_TIMEOUT = float(os.environ.get('GPUX_NODE_TIMEOUT', '15'))   # job-status / media proxy to a node
 
 def load_nodes():
     with open(NODES_FILE) as f:
@@ -235,15 +236,20 @@ async def job_status(jid: str):
     name = _job_node.get(jid)
     if not name:
         raise HTTPException(404, detail='unknown job')
-    async with httpx.AsyncClient(timeout=5) as client:
-        r = await client.get(node_url(name) + f'/api/jobs/{jid}')
+    try:
+        async with httpx.AsyncClient(timeout=NODE_TIMEOUT) as client:
+            r = await client.get(node_url(name) + f'/api/jobs/{jid}')
         j = r.json()
-        if j.get('status') in ('done', 'error'):
-            try:
-                usage_db.finish_job(jid, j['status'], j.get('total'))
-            except Exception:
-                pass
-        return JSONResponse(j, status_code=r.status_code)
+    except Exception as e:
+        # transient node/mesh hiccup — let the client keep polling
+        print(f'[router] job_status proxy failed for {jid}: {e}', flush=True)
+        return JSONResponse({'status': 'running', 'transient_error': str(e)}, status_code=200)
+    if j.get('status') in ('done', 'error'):
+        try:
+            usage_db.finish_job(jid, j['status'], j.get('total'))
+        except Exception:
+            pass
+    return JSONResponse(j, status_code=r.status_code)
 
 @app.get("/api/usage")
 async def usage(limit: int = 50):
@@ -340,7 +346,7 @@ async def media(name: str, request: Request):
     # previews (and legacy images): try nodes in order
     order = [prefer] if prefer else []
     order += [n['name'] for n in NODES if n['name'] != prefer]
-    async with httpx.AsyncClient(timeout=10) as client:
+    async with httpx.AsyncClient(timeout=NODE_TIMEOUT) as client:
         for n in order:
             try:
                 r = await client.get(node_url(n) + path)
