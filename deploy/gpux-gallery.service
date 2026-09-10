@@ -1,0 +1,20 @@
+[Unit]
+Description=gpux gallery (central image store for all GPU nodes)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=avk
+Group=avk
+WorkingDirectory=/home/avk/gpux/gallery
+EnvironmentFile=/home/avk/gpux/gallery/gallery.env
+ExecStart=/home/avk/gpux/venv/bin/python /home/avk/gpux/gallery/serve.py
+Restart=always
+RestartSec=5
+# lightweight; keep it from ever starving the box
+MemoryMax=1G
+CPUWeight=20
+
+[Install]
+WantedBy=multi-user.target

@@ -6,3 +6,5 @@ serve.log
 *.log
 .venv/
 usage.db
+*.env
+store/
