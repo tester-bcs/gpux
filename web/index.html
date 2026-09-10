@@ -428,9 +428,15 @@ async function pollStatus() {
   try {
     const r = await fetch(API + '/api/status');
     const s = await r.json();
-    busy = s.busy;
-    // fallback если SSE отвалился: проверяем свою задачу напрямую
-    if (curJob && !busy) {
+    // router aggregate shape: {ready, nodes:[{ok,ready,busy,detail:{init_elapsed,init_error}}], ...}
+    // direct-node shape:      {ready, busy, init_elapsed, init_error}
+    const nodes = Array.isArray(s.nodes) ? s.nodes : null;
+    const modelUp = nodes ? nodes.some(n => n.ok && n.ready) : !!s.ready;
+    const initErr = nodes ? nodes.some(n => n.detail && n.detail.init_error) : !!s.init_error;
+    const initElapsed = nodes ? (nodes[0] && nodes[0].detail && nodes[0].detail.init_elapsed) : s.init_elapsed;
+    busy = nodes ? nodes.some(n => n.busy) : !!s.busy;
+    // fallback если SSE отвалился: проверяем свою задачу напрямую пока она активна
+    if (curJob) {
       const jr = await fetch(API + '/api/jobs/' + curJob);
       const jj = await jr.json();
       if (jj.status === 'done') {
@@ -442,10 +448,11 @@ async function pollStatus() {
         setTimeout(hideJobCard, 6000);
       }
     }
-    modelReady = s.ready;
+    modelReady = modelUp;
     updateBtn();
-    if (!s.ready && !s.init_error) $('genBtn').textContent = `Загрузка модели… ${s.init_elapsed}s`;
-    if (s.init_error) $('genBtn').textContent = 'Ошибка init';
+    if (!modelUp && !initErr)
+      $('genBtn').textContent = initElapsed ? `Загрузка модели… ${Math.round(initElapsed)}s` : 'Загрузка модели…';
+    if (initErr) $('genBtn').textContent = 'Ошибка init';
   } catch (e) {}
   setTimeout(pollStatus, 2000);
 }

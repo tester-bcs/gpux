@@ -251,10 +251,11 @@ async def events(request: Request):
     """SSE: aggregate events from the node that owns the current job.
     Prototype: browser connects right after /api/generate, so we route to
     the node of the latest job (or first free node if none yet)."""
-    latest = None
+    latest_node = None
     if _job_node:
-        latest = next(reversed(_job_node))  # last submitted job's node
-    name = latest or (await pick_node())[0]['name']
+        latest_jid = next(reversed(_job_node))      # last submitted job id
+        latest_node = _job_node.get(latest_jid)     # -> its node name
+    name = latest_node or (await pick_node())[0]['name']
     url = node_url(name) + '/api/events'
 
     async def stream():
