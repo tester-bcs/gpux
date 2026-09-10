@@ -18,15 +18,18 @@ import json, os, time
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Header
-from fastapi.responses import Response, JSONResponse
+from fastapi.responses import Response, JSONResponse, FileResponse
 
 HERE = Path(__file__).parent
 STORE = Path(os.environ.get("GPUX_STORE", HERE / "store"))
 STORE.mkdir(parents=True, exist_ok=True)
 TOKEN = os.environ.get("GPUX_INGEST_TOKEN", "")
 IMG_EXT = {".jpg", ".jpeg", ".png", ".webp"}
-MAX_BYTES = 40 * 1024 * 1024
-META_KEYS = ("prompt", "seed", "steps", "mode", "resolution", "model")
+AUDIO_EXT = {".wav", ".mp3", ".flac", ".ogg"}
+MEDIA_EXT = IMG_EXT | AUDIO_EXT
+MAX_BYTES = 80 * 1024 * 1024
+META_KEYS = ("prompt", "seed", "steps", "mode", "resolution", "model",
+             "modality", "kind", "duration_s")
 
 app = FastAPI(title="gpux gallery")
 
@@ -41,8 +44,9 @@ def _safe_seg(s: str) -> str:
 
 def _mt(name: str) -> str:
     e = Path(name).suffix.lower()
-    return {".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-            ".png": "image/png", ".webp": "image/webp"}.get(e, "application/octet-stream")
+    return {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+            ".webp": "image/webp", ".wav": "audio/wav", ".mp3": "audio/mpeg",
+            ".flac": "audio/flac", ".ogg": "audio/ogg"}.get(e, "application/octet-stream")
 
 
 @app.get("/healthz")
@@ -60,7 +64,7 @@ async def ingest(file: UploadFile = File(...),
         raise HTTPException(401, "bad token")
     node = _safe_seg(node)
     name = _safe_seg(file.filename or "")
-    if Path(name).suffix.lower() not in IMG_EXT:
+    if Path(name).suffix.lower() not in MEDIA_EXT:
         raise HTTPException(400, "unsupported extension")
 
     blob = await file.read()
@@ -96,7 +100,7 @@ def _iter_images():
         if not nd.is_dir():
             continue
         for f in nd.iterdir():
-            if f.suffix.lower() in IMG_EXT and f.is_file():
+            if f.suffix.lower() in MEDIA_EXT and f.is_file():
                 yield nd.name, f
 
 
@@ -114,7 +118,7 @@ async def gallery(limit: int = 60):
         if sc.exists():
             try:
                 m = json.loads(sc.read_text())
-                for k in ("prompt", "seed", "steps", "mode"):
+                for k in ("prompt", "seed", "steps", "mode", "modality", "kind", "duration_s"):
                     if m.get(k) is not None:
                         entry[k] = m[k]
             except Exception:
@@ -127,7 +131,7 @@ async def gallery(limit: int = 60):
 @app.get("/api/image/{name}")
 async def image(name: str, node: str | None = None):
     name = _safe_seg(name)
-    if Path(name).suffix.lower() not in IMG_EXT:
+    if Path(name).suffix.lower() not in MEDIA_EXT:
         raise HTTPException(404)
     if node:
         cand = [STORE / _safe_seg(node) / name]
@@ -135,8 +139,9 @@ async def image(name: str, node: str | None = None):
         cand = [STORE / nd.name / name for nd in STORE.iterdir() if nd.is_dir()]
     for p in cand:
         if p.is_file():
-            return Response(content=p.read_bytes(), media_type=_mt(name),
-                            headers={"Cache-Control": "public, max-age=86400"})
+            # FileResponse supports HTTP Range -> <audio> seeking
+            return FileResponse(p, media_type=_mt(name),
+                                headers={"Cache-Control": "public, max-age=86400"})
     raise HTTPException(404)
 
 

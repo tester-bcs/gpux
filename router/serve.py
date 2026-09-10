@@ -119,9 +119,19 @@ async def pick_node(modality: str = "image", model: str | None = None, feature: 
         if not caps:
             return (modality == "image" and feature is None
                     and (model is None or model == "flux2_klein_4b"))
-        return (modality in (caps.get('modalities') or [])
-                and (model is None or model in (caps.get('models') or []))
-                and (feature is None or feature in (caps.get('features') or [])))
+        if modality not in (caps.get('modalities') or []):
+            return False
+        if model is not None and model not in (caps.get('models') or []):
+            return False
+        if feature is not None and feature not in (caps.get('features') or []):
+            return False
+        # per-model VRAM floor (audio models declare their own footprint)
+        mc = (caps.get('model_cost') or {}).get(model or '', {})
+        need = mc.get('min_free_vram_gb')
+        free_gb = (h.get('detail') or {}).get('free_vram_gb')
+        if need is not None and free_gb is not None and free_gb < need:
+            return False
+        return True
 
     eligible = [(n, _health[n['name']]) for n in NODES
                 if _health.get(n['name'], {}).get('ok') and can_serve(n, _health[n['name']])]
@@ -131,12 +141,17 @@ async def pick_node(modality: str = "image", model: str | None = None, feature: 
             want += f" feature={feature}"
         raise HTTPException(503, detail=f'no GPU nodes can serve {want}')
 
+    def rank(t):
+        h = t[1]
+        caps = h.get('caps') or {}
+        needs_swap = model is not None and caps.get('loaded_model') not in (None, model)
+        return (needs_swap, h['busy'], h['queue'])
+
     free = [(n, h) for n, h in eligible
             if h['ready'] and not h['busy'] and h['queue'] == 0]
-    if free:
-        return free[0]
-    eligible.sort(key=lambda t: (t[1]['busy'], t[1]['queue']))
-    return eligible[0]
+    pool = free or eligible
+    pool.sort(key=rank)
+    return pool[0]
 
 def node_url(name: str) -> str:
     for n in NODES:
@@ -159,6 +174,15 @@ class GenRequest(BaseModel):
     mode: str = "txt2img"           # "txt2img" | "img2img"
     init_image: str | None = None   # data URL / base64, forwarded verbatim to the node
     denoise: float = 0.6
+    # --- audio (forwarded verbatim to the node) ---
+    style: str | None = None
+    negative_prompt: str | None = None
+    duration_s: int | None = None
+    audio_scale: float | None = None
+    guidance_scale: float | None = None
+    language: str | None = None
+    voice_ref: str | None = None
+    tts: dict | None = None
 
 # ---------------- routes ----------------
 @app.get("/api/status")
@@ -172,6 +196,8 @@ async def status():
 @app.post("/api/generate")
 async def generate(req: GenRequest, request: Request):
     user = auth_user(request)
+    if req.modality == "audio" and req.draft:
+        raise HTTPException(400, detail='audio cannot be routed to draft/Horde overflow')
     is_img2img = req.mode == "img2img"
     if is_img2img:
         if req.draft:

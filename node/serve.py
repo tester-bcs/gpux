@@ -37,6 +37,11 @@ INPUTS.mkdir(parents=True, exist_ok=True)
 GALLERY_PENDING = HERE.parent / 'gallery_pending'   # push retries when central store is down
 GALLERY_PENDING.mkdir(parents=True, exist_ok=True)
 ALLOWED_EXT = {'.jpg', '.jpeg', '.png', '.webp'}
+AUDIO_EXT = {'.wav', '.mp3', '.flac', '.ogg'}
+MEDIA_EXT = ALLOWED_EXT | AUDIO_EXT
+_MIME = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+         '.webp': 'image/webp', '.wav': 'audio/wav', '.mp3': 'audio/mpeg',
+         '.flac': 'audio/flac', '.ogg': 'audio/ogg'}
 MAX_INPUT_BYTES = 20 * 1024 * 1024       # cap decoded upload size
 INPUT_MAX_SIDE = 2048                    # downscale huge uploads before handing to WanGP
 # idle-farming flag: when present, node reports not-ready (Horde worker holds VRAM)
@@ -55,6 +60,8 @@ app = FastAPI(title="gpux node")
 state = {
     'session': None, 'model_ready': False, 'init_started': time.time(),
     'init_error': None, 'busy': False, 'queue_len': 0, 'current_job': None,
+    'loaded_model': config.DEFAULT_MODEL,   # our belief of what's resident; None = unknown
+    'swapping': False,
 }
 job_queue = queue.Queue()
 listeners = []
@@ -76,10 +83,9 @@ GALLERY_TOKEN = getattr(config, 'GALLERY_TOKEN', '')
 NODE_NAME = config.CAPABILITIES.get('hostname', 'node')
 
 def _push_one(path: Path, meta: dict) -> bool:
-    """POST one image + meta to the gallery service. True on success."""
-    mt = 'image/jpeg' if path.suffix.lower() in ('.jpg', '.jpeg') else \
-         'image/png' if path.suffix.lower() == '.png' else 'image/webp'
-    with httpx.Client(timeout=30) as c:
+    """POST one media file + meta to the gallery service. True on success."""
+    mt = _MIME.get(path.suffix.lower(), 'application/octet-stream')
+    with httpx.Client(timeout=60) as c:
         r = c.post(GALLERY_URL + '/ingest',
                    headers={'X-Gpux-Token': GALLERY_TOKEN},
                    data={'node': NODE_NAME, 'meta': json.dumps(meta, ensure_ascii=False)},
@@ -149,7 +155,16 @@ def wan2gp_job_worker():
 
         timings, last_phase, phase_start = {}, None, time.time()
         t1 = time.time()
+        swap_t0 = None
+        if job.get('needs_swap'):
+            swap_t0 = time.time()
+            state['swapping'] = True
+            broadcast({'type': 'model_swap', 'id': jid, 'from': state['loaded_model'],
+                       'to': job['target_model'], 'eta_s': job.get('eta_s') or 60})
+            print(f"[node] swapping model {state['loaded_model']} -> {job['target_model']}", flush=True)
         try:
+            # WanGP releases the current model and loads the new one inside submit_task
+            # when settings['model_type'] differs from what's resident.
             task = state['session'].submit_task(job['settings'])
             preview_n = 0
             for ev in task.events.iter(timeout=0.3):
@@ -179,6 +194,11 @@ def wan2gp_job_worker():
 
             result = task.result()
             t_total = round(time.time() - t1, 1)
+            if swap_t0 is not None:
+                timings['model_swap'] = round(time.time() - swap_t0, 1)
+                state['loaded_model'] = job['target_model']
+                state['swapping'] = False
+                print(f"[node] model now {state['loaded_model']} (swap {timings['model_swap']}s)", flush=True)
             if result.success:
                 files = [str(f) for f in result.generated_files if Path(f).exists()]
                 # sidecar with the initiating prompt/params, one per output file
@@ -205,8 +225,13 @@ def wan2gp_job_worker():
             jobs_done[jid] = {'status': 'error', 'error': str(e)}
             broadcast({'type': 'job_error', 'id': jid, 'error': str(e)})
             print(f"[node] job {jid} exception: {e}", flush=True)
+            if swap_t0 is not None:
+                # swap may have half-loaded — force a fresh swap on the next job
+                state['loaded_model'] = None
+                state['swapping'] = False
         finally:
             state.update(busy=False, current_job=None)
+            state['swapping'] = False
             src = job.get('input_file')
             if src:
                 try:
@@ -220,12 +245,38 @@ threading.Thread(target=wan2gp_job_worker, daemon=True).start()
 
 class GenRequest(BaseModel):
     prompt: str
+    modality: str = "image"         # "image" | "audio"
+    model: str | None = None        # audio model alias (config.AUDIO_MODELS); image ignores
     resolution: str = "1280x960"
     steps: int = 20
     seed: int | None = None
     mode: str = "txt2img"           # "txt2img" | "img2img"
     init_image: str | None = None   # data URL or bare base64, required for img2img
     denoise: float = 0.6            # reserved for latent img2img (image_guide path)
+    # --- audio ---
+    style: str | None = None            # -> alt_prompt (genre/style, ACE-Step)
+    negative_prompt: str | None = None
+    duration_s: int | None = None       # -> duration_seconds (clamped per model)
+    audio_scale: float | None = None
+    guidance_scale: float | None = None
+    language: str | None = None         # -> model_mode (chatterbox)
+    voice_ref: str | None = None        # data URL / base64 wav (voice clone)
+    tts: dict | None = None             # {exaggeration, pace, temperature}
+
+
+def _decode_audio_ref(data: str, jid: str) -> Path:
+    raw = data.split(',', 1)[-1] if data.startswith('data:') else data
+    try:
+        blob = base64.b64decode(raw, validate=True)
+    except Exception:
+        raise HTTPException(400, "voice_ref is not valid base64")
+    if len(blob) > MAX_INPUT_BYTES:
+        raise HTTPException(413, "voice_ref too large")
+    if blob[:4] != b'RIFF':
+        raise HTTPException(400, "voice_ref must be a WAV file")
+    path = INPUTS / f"{jid}.wav"
+    path.write_bytes(blob)
+    return path.resolve()
 
 
 def _decode_init_image(data: str, jid: str) -> Path:
@@ -250,6 +301,10 @@ def _decode_init_image(data: str, jid: str) -> Path:
     return path.resolve()
 
 
+def _clamp(v, lo, hi):
+    return max(lo, min(hi, v))
+
+
 @app.post("/api/generate")
 async def api_generate(req: GenRequest):
     if not state['model_ready']:
@@ -257,38 +312,93 @@ async def api_generate(req: GenRequest):
     if not req.prompt.strip():
         raise HTTPException(400, "empty prompt")
     jid = uuid.uuid4().hex[:12]
-    settings = {
-        "model_type": config.MODEL_TYPE,
-        "prompt": req.prompt.strip(),
-        "resolution": req.resolution,
-        "num_inference_steps": max(1, min(50, req.steps)),
-        "batch_size": 1,
-        "embedded_guidance_scale": 1,
-    }
-    if req.seed is not None:
-        settings["seed"] = req.seed
-
+    free_gb, _ = free_vram_gb()
     input_file = None
-    if req.mode == "img2img":
-        if not req.init_image:
-            raise HTTPException(400, "img2img requires init_image")
-        input_file = _decode_init_image(req.init_image, jid)
-        # Flux 2 Klein: reference/edit path. WanGP auto-sets video_prompt_type="KI"
-        # from the model's image_ref_choices when image_refs is present.
-        settings["image_refs"] = [str(input_file)]
+    warnings = []
 
-    meta = {
-        "prompt": req.prompt.strip(),
-        "seed": req.seed,
-        "steps": settings["num_inference_steps"],
-        "resolution": req.resolution,
-        "mode": req.mode,
-        "model": config.MODEL_TYPE,
-    }
-    job_queue.put({'id': jid, 'settings': settings,
-                   'input_file': str(input_file) if input_file else None, 'meta': meta})
+    if req.modality == "audio":
+        am = config.AUDIO_MODELS.get(req.model or "")
+        if am is None:
+            raise HTTPException(400, f"unknown audio model {req.model!r}; have {list(config.AUDIO_MODELS)}")
+        if free_gb is not None and free_gb < am["min_free_vram_gb"]:
+            raise HTTPException(503, f"insufficient free VRAM for {req.model}: {free_gb} < {am['min_free_vram_gb']} GB")
+        target_model = am["wangp_model_type"]
+        settings = {"model_type": target_model, "prompt": req.prompt.strip(), **am["defaults"]}
+        if req.seed is not None:
+            settings["seed"] = req.seed
+        if req.style:
+            settings["alt_prompt"] = req.style
+        if req.negative_prompt is not None:
+            settings["negative_prompt"] = req.negative_prompt
+        if "steps_range" in am:
+            lo, hi = am["steps_range"]
+            settings["num_inference_steps"] = _clamp(
+                req.steps if req.steps else am["steps_default"], lo, hi)
+        dur = None
+        if req.duration_s:
+            dur = min(req.duration_s, am["max_duration_s"])
+            if dur != req.duration_s:
+                warnings.append(f"duration {req.duration_s}->{dur}s")
+            settings["duration_seconds"] = dur
+        if req.audio_scale is not None:
+            settings["audio_scale"] = req.audio_scale
+        if req.guidance_scale is not None:
+            settings["guidance_scale"] = req.guidance_scale
+        if req.language:
+            settings["model_mode"] = req.language
+        if req.tts:
+            cs = dict(settings.get("custom_settings") or {})
+            for k in ("exaggeration", "pace"):
+                if k in req.tts:
+                    cs[k] = req.tts[k]
+            if cs:
+                settings["custom_settings"] = cs
+            if "temperature" in req.tts:
+                settings["temperature"] = req.tts["temperature"]
+        if req.voice_ref:
+            if not am.get("voice_ref"):
+                raise HTTPException(400, f"{req.model} does not support voice_ref")
+            input_file = _decode_audio_ref(req.voice_ref, jid)
+            settings["audio_guide"] = str(input_file)
+        meta = {"prompt": req.prompt.strip(), "seed": req.seed,
+                "steps": settings["num_inference_steps"], "modality": "audio",
+                "kind": am["kind"], "model": req.model, "duration_s": dur}
+    else:
+        target_model = config.DEFAULT_MODEL
+        settings = {
+            "model_type": target_model,
+            "prompt": req.prompt.strip(),
+            "resolution": req.resolution,
+            "num_inference_steps": max(1, min(50, req.steps)),
+            "batch_size": 1,
+            "embedded_guidance_scale": 1,
+        }
+        if req.seed is not None:
+            settings["seed"] = req.seed
+        if req.mode == "img2img":
+            if not req.init_image:
+                raise HTTPException(400, "img2img requires init_image")
+            input_file = _decode_init_image(req.init_image, jid)
+            # Flux 2 Klein: reference/edit path. WanGP auto-sets video_prompt_type="KI"
+            # from the model's image_ref_choices when image_refs is present.
+            settings["image_refs"] = [str(input_file)]
+        meta = {"prompt": req.prompt.strip(), "seed": req.seed,
+                "steps": settings["num_inference_steps"], "resolution": req.resolution,
+                "mode": req.mode, "modality": "image", "model": target_model}
+
+    needs_swap = target_model != state['loaded_model']
+    eta_s = None
+    if needs_swap:
+        am2 = next((v for v in config.AUDIO_MODELS.values()
+                    if v["wangp_model_type"] == target_model), None)
+        eta_s = (am2 or {}).get("load_time_s", 60)
+
+    job_queue.put({'id': jid, 'settings': settings, 'meta': meta,
+                   'input_file': str(input_file) if input_file else None,
+                   'needs_swap': needs_swap, 'target_model': target_model, 'eta_s': eta_s})
     state['queue_len'] = job_queue.qsize()
-    return {"id": jid, "queue": state['queue_len'], "busy": state['busy']}
+    return {"id": jid, "queue": state['queue_len'], "busy": state['busy'],
+            "swap": needs_swap, "eta_s": eta_s, "warnings": warnings}
 
 def free_vram_gb():
     """Actual free VRAM on GPU0 (accounts for games/render/apps)."""
@@ -308,10 +418,13 @@ async def api_status():
     free_gb, total_gb = free_vram_gb()
     vram_ok = free_gb is None or free_gb >= config.MIN_FREE_VRAM_GB
     return {
-        "ready": state['model_ready'] and not farming and vram_ok and not offline_flag,
+        "ready": (state['model_ready'] and not farming and vram_ok
+                  and not offline_flag and not state['swapping']),
         "farming": farming,
         "offline": offline_flag,
-        "busy": state['busy'],
+        "busy": state['busy'] or state['swapping'],
+        "swapping": state['swapping'],
+        "loaded_model": state['loaded_model'],
         "queue": state['queue_len'], "current": state['current_job'],
         "init_elapsed": round(time.time() - state['init_started'], 1),
         "init_error": state['init_error'],
@@ -319,9 +432,32 @@ async def api_status():
         "vram_ok": vram_ok,
     }
 
+def _model_cost():
+    cost = {config.DEFAULT_MODEL: {"modality": "image", "kind": "image",
+                                  "max_resolution": config.CAPABILITIES.get("max_resolution")}}
+    for alias, m in config.AUDIO_MODELS.items():
+        c = {
+            "modality": "audio", "kind": m["kind"], "output": m["output_ext"],
+            "wangp_model_type": m["wangp_model_type"],
+            "min_free_vram_gb": m["min_free_vram_gb"], "load_time_s": m["load_time_s"],
+        }
+        if "steps_range" in m:
+            c["steps_range"] = list(m["steps_range"])
+            c["steps_default"] = m.get("steps_default")
+        if "max_duration_s" in m:
+            c["max_duration_s"] = m["max_duration_s"]
+        if m.get("languages"):
+            c["languages"] = m["languages"]
+        if m.get("voice_ref"):
+            c["voice_ref"] = True
+        cost[alias] = c
+    return cost
+
 @app.get("/api/capabilities")
 async def api_capabilities():
     caps = dict(config.CAPABILITIES)
+    caps["loaded_model"] = state['loaded_model']
+    caps["model_cost"] = _model_cost()
     free_gb, _ = free_vram_gb()
     if free_gb is not None:
         caps["free_vram_gb"] = free_gb
@@ -363,14 +499,14 @@ async def api_gallery(limit: int = 60):
     files = []
     if OUTPUTS.exists():
         for f in sorted(OUTPUTS.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
-            if f.suffix.lower() in ALLOWED_EXT:
+            if f.suffix.lower() in MEDIA_EXT:
                 entry = {"name": f.name, "url": f"/api/image/{f.name}",
                          "size": f.stat().st_size, "mtime": f.stat().st_mtime}
                 sc = OUTPUTS / (f.name + '.json')
                 if sc.exists():
                     try:
                         m = json.loads(sc.read_text())
-                        for k in ('prompt', 'seed', 'steps', 'mode'):
+                        for k in ('prompt', 'seed', 'steps', 'mode', 'modality', 'kind', 'duration_s'):
                             if m.get(k) is not None:
                                 entry[k] = m[k]
                     except Exception:
@@ -381,11 +517,12 @@ async def api_gallery(limit: int = 60):
     return {"files": files}
 
 @app.get("/api/image/{name}")
+@app.get("/api/media/{name}")
 async def api_image(name: str):
     f = OUTPUTS / name
-    if not f.exists() or f.suffix.lower() not in ALLOWED_EXT:
+    if not f.exists() or f.suffix.lower() not in MEDIA_EXT:
         raise HTTPException(404)
-    return FileResponse(f, media_type="image/jpeg")
+    return FileResponse(f, media_type=_MIME.get(f.suffix.lower(), 'application/octet-stream'))
 
 @app.get("/api/previews/{name}")
 async def api_preview(name: str):
