@@ -1,14 +1,18 @@
 [Unit]
-Description=gpux router — GPU multiplexer
-After=network-online.target
+Description=gpux router — GPU multiplexer + control plane
+After=network-online.target gpux-gallery.service
+Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
-WorkingDirectory=/opt/gpux-router
-ExecStart=/usr/bin/python3 /opt/gpux-router/serve.py
+User=avk
+Group=avk
+WorkingDirectory=/home/avk/gpux/router
+EnvironmentFile=/home/avk/gpux/router/router.env
+ExecStart=/home/avk/gpux/venv/bin/python /home/avk/gpux/router/serve.py
 Restart=always
 RestartSec=5
+MemoryMax=2G
 
 [Install]
 WantedBy=multi-user.target

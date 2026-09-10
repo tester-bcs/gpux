@@ -26,6 +26,13 @@ WEB_DIR = HERE / 'web'
 HEALTH_TTL = 5.0          # seconds a health snapshot stays fresh
 JOB_TIMEOUT = 900          # hard cap for one generation proxying
 
+# central gallery service (gpux-gallery). When set, /api/gallery and
+# /api/image are backed by it instead of proxying each node directly.
+GALLERY_URL = os.environ.get('GPUX_GALLERY_URL', '').rstrip('/')
+ROUTER_HOST = os.environ.get('GPUX_ROUTER_HOST', '127.0.0.1')
+ROUTER_PORT = int(os.environ.get('GPUX_ROUTER_PORT', '8096'))
+HEALTH_TIMEOUT = float(os.environ.get('GPUX_HEALTH_TIMEOUT', '4'))
+
 def load_nodes():
     with open(NODES_FILE) as f:
         cfg = yaml.safe_load(f)
@@ -61,7 +68,7 @@ _health = {}  # name -> {"ok": bool, "ready": bool, "busy": bool, "queue": int, 
 
 async def refresh_health():
     """Poll every node /api/status (cheap) + /api/capabilities and cache."""
-    async with httpx.AsyncClient(timeout=4) as client:
+    async with httpx.AsyncClient(timeout=HEALTH_TIMEOUT) as client:
         async def one(n):
             try:
                 r = await client.get(n['url'] + '/api/status')
@@ -270,7 +277,8 @@ async def events(request: Request):
 
 @app.get("/api/gallery")
 async def gallery(limit: int = 60):
-    """Merged gallery from all reachable nodes + local horde artifacts."""
+    """Merged gallery: local horde artifacts + central gallery service
+    (or, in legacy mode, a fan-out to every node)."""
     out = []
     # horde artifacts (local)
     from horde import ARTIFACTS
@@ -280,19 +288,27 @@ async def gallery(limit: int = 60):
                 out.append({'name': f.name, 'url': f'/api/image/{f.name}',
                             'size': f.stat().st_size, 'mtime': f.stat().st_mtime,
                             'node': 'aihorde'})
-    async with httpx.AsyncClient(timeout=6) as client:
-        async def one(n):
-            try:
-                r = await client.get(n['url'] + '/api/gallery')
-                files = r.json().get('files', [])
-                for f in files:
-                    f['node'] = n['name']
-                return files
-            except Exception:
-                return []
-        lists = await asyncio.gather(*(one(n) for n in NODES))
-    for l in lists:
-        out.extend(l)
+    if GALLERY_URL:
+        try:
+            async with httpx.AsyncClient(timeout=8) as client:
+                r = await client.get(f'{GALLERY_URL}/api/gallery', params={'limit': limit})
+                out.extend(r.json().get('files', []))
+        except Exception as e:
+            print(f'[router] gallery service unreachable: {e}', flush=True)
+    else:
+        async with httpx.AsyncClient(timeout=6) as client:
+            async def one(n):
+                try:
+                    r = await client.get(n['url'] + '/api/gallery')
+                    files = r.json().get('files', [])
+                    for f in files:
+                        f['node'] = n['name']
+                    return files
+                except Exception:
+                    return []
+            lists = await asyncio.gather(*(one(n) for n in NODES))
+        for l in lists:
+            out.extend(l)
     out.sort(key=lambda f: f.get('mtime', 0), reverse=True)
     return {'files': out[:limit]}
 
@@ -307,11 +323,23 @@ async def media(name: str, request: Request):
             mt = 'image/webp' if f.suffix == '.webp' else 'image/png'
             return Response(content=f.read_bytes(), media_type=mt)
         raise HTTPException(404)
-    # previews/images live per node; try nodes in order (gallery tells which one via ?node=)
+    path = request.url.path  # /api/image/... or /api/previews/...
     prefer = request.query_params.get('node')
+    # images -> central gallery service; previews stay per-node (transient)
+    if GALLERY_URL and path.startswith('/api/image/'):
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.get(f'{GALLERY_URL}{path}',
+                                     params={'node': prefer} if prefer else None)
+                if r.status_code == 200:
+                    return Response(content=r.content,
+                                    media_type=r.headers.get('content-type', 'image/jpeg'))
+        except Exception:
+            pass
+        raise HTTPException(404)
+    # previews (and legacy images): try nodes in order
     order = [prefer] if prefer else []
     order += [n['name'] for n in NODES if n['name'] != prefer]
-    path = request.url.path  # /api/image/... or /api/previews/...
     async with httpx.AsyncClient(timeout=10) as client:
         for n in order:
             try:
@@ -358,4 +386,4 @@ app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
 
 if __name__ == '__main__':
     import uvicorn
-    uvicorn.run(app, host='127.0.0.1', port=8096, log_level='warning')
+    uvicorn.run(app, host=ROUTER_HOST, port=ROUTER_PORT, log_level='warning')
