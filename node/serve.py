@@ -120,6 +120,15 @@ def wan2gp_job_worker():
             t_total = round(time.time() - t1, 1)
             if result.success:
                 files = [str(f) for f in result.generated_files if Path(f).exists()]
+                # sidecar with the initiating prompt/params, one per output file
+                for f in files:
+                    try:
+                        fp = Path(f)
+                        (fp.parent / (fp.name + '.json')).write_text(
+                            json.dumps({**job.get('meta', {}), 'ts': time.time(),
+                                        'file': fp.name}, ensure_ascii=False))
+                    except Exception as e:
+                        print(f"[node] sidecar write failed: {e}", flush=True)
                 jobs_done[jid] = {'status': 'done', 'files': files, 'timings': timings, 'total': t_total}
                 broadcast({'type': 'job_done', 'id': jid, 'files': files,
                            'timings': timings, 'total': t_total})
@@ -204,7 +213,16 @@ async def api_generate(req: GenRequest):
         # from the model's image_ref_choices when image_refs is present.
         settings["image_refs"] = [str(input_file)]
 
-    job_queue.put({'id': jid, 'settings': settings, 'input_file': str(input_file) if input_file else None})
+    meta = {
+        "prompt": req.prompt.strip(),
+        "seed": req.seed,
+        "steps": settings["num_inference_steps"],
+        "resolution": req.resolution,
+        "mode": req.mode,
+        "model": config.MODEL_TYPE,
+    }
+    job_queue.put({'id': jid, 'settings': settings,
+                   'input_file': str(input_file) if input_file else None, 'meta': meta})
     state['queue_len'] = job_queue.qsize()
     return {"id": jid, "queue": state['queue_len'], "busy": state['busy']}
 
@@ -282,8 +300,18 @@ async def api_gallery(limit: int = 60):
     if OUTPUTS.exists():
         for f in sorted(OUTPUTS.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
             if f.suffix.lower() in ALLOWED_EXT:
-                files.append({"name": f.name, "url": f"/api/image/{f.name}",
-                              "size": f.stat().st_size, "mtime": f.stat().st_mtime})
+                entry = {"name": f.name, "url": f"/api/image/{f.name}",
+                         "size": f.stat().st_size, "mtime": f.stat().st_mtime}
+                sc = OUTPUTS / (f.name + '.json')
+                if sc.exists():
+                    try:
+                        m = json.loads(sc.read_text())
+                        for k in ('prompt', 'seed', 'steps', 'mode'):
+                            if m.get(k) is not None:
+                                entry[k] = m[k]
+                    except Exception:
+                        pass
+                files.append(entry)
             if len(files) >= limit:
                 break
     return {"files": files}

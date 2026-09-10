@@ -105,6 +105,27 @@ input[type=text].seedin {
 .tile img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .25s; }
 .tile:hover img { transform: scale(1.04); }
 @keyframes pop { from { opacity: 0; transform: scale(.96); } to { opacity: 1; transform: scale(1); } }
+.info-btn {
+  position: absolute; top: 7px; right: 7px; width: 24px; height: 24px; z-index: 3;
+  border-radius: 50%; background: #000000b3; border: 1px solid #ffffff40;
+  color: #fff; font: italic 600 14px/1 Georgia, 'Times New Roman', serif;
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+  opacity: 0; transition: opacity .15s, background .15s;
+}
+.tile:hover .info-btn, .info-btn.pinned { opacity: 1; }
+.info-btn:hover { background: var(--accent); color: #000; }
+.prompt-pop {
+  position: fixed; z-index: 70; max-width: 380px; display: none;
+  background: var(--card2); border: 1px solid #3a3a3a; border-radius: 10px;
+  padding: 11px 13px; font-size: 13px; line-height: 1.45; color: var(--text);
+  white-space: pre-wrap; word-break: break-word; box-shadow: 0 10px 34px #000000a8;
+}
+.prompt-pop.show { display: block; }
+.prompt-pop .pp-label {
+  color: var(--dim); font-size: 10px; letter-spacing: .6px; text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.prompt-pop .pp-label.foot { margin: 8px 0 0; }
 .empty { color: #555; font-size: 14px; text-align: center; padding: 50px 0; }
 .empty em { color: var(--dim); cursor: pointer; font-style: normal; border-bottom: 1px dashed #444; }
 .empty em:hover { color: var(--accent); border-color: var(--accent); }
@@ -206,6 +227,7 @@ input[type=text].seedin {
   </div>
 </div>
 <div class="toast" id="toast"></div>
+<div class="prompt-pop" id="promptPop"></div>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -370,6 +392,49 @@ function updateBtn() {
 promptEl.addEventListener('input', updateBtn);
 
 /* ---- gallery ---- */
+const escHtml = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+// fallback: recover a (truncated) prompt from WanGP's filename convention
+function promptFromName(name) {
+  const m = name.replace(/\.[a-z0-9]+$/i, '')
+                .match(/^\d{4}-\d\d-\d\d-\d\dh\d\dm\d\ds_seed\d+_(.+)$/);
+  return m ? m[1] : null;
+}
+function tilePrompt(f) {
+  if (f.prompt) return { text: f.prompt, exact: true };
+  const n = promptFromName(f.name);
+  return n ? { text: n, exact: false } : null;
+}
+function showPromptPop(ev, f, btn) {
+  const pp = $('promptPop'), p = tilePrompt(f);
+  if (!p) return;
+  const label = (f.mode === 'img2img' ? 'img2img · промпт' : 'промпт') + (p.exact ? '' : ' (из имени файла)');
+  let html = `<div class="pp-label">${escHtml(label)}</div>${escHtml(p.text)}${p.exact ? '' : ' …'}`;
+  const foot = [];
+  if (f.seed != null) foot.push('seed ' + f.seed);
+  if (f.steps != null) foot.push(f.steps + ' шагов');
+  if (f.node) foot.push(f.node);
+  if (foot.length) html += `<div class="pp-label foot">${escHtml(foot.join(' · '))}</div>`;
+  pp.innerHTML = html;
+  pp.classList.add('show');
+  document.querySelectorAll('.info-btn.pinned').forEach(b => b.classList.remove('pinned'));
+  if (btn) btn.classList.add('pinned');
+  const r = btn.getBoundingClientRect(), pw = pp.offsetWidth, ph = pp.offsetHeight;
+  let x = r.right + 8, y = r.top;
+  if (x + pw > innerWidth - 8) x = r.left - pw - 8;
+  if (x < 8) x = 8;
+  if (y + ph > innerHeight - 8) y = innerHeight - ph - 8;
+  pp.style.left = x + 'px';
+  pp.style.top = Math.max(8, y) + 'px';
+}
+function hidePromptPop() {
+  $('promptPop').classList.remove('show');
+  document.querySelectorAll('.info-btn.pinned').forEach(b => b.classList.remove('pinned'));
+}
+document.addEventListener('click', e => {
+  if (!e.target.closest('.info-btn') && !e.target.closest('.prompt-pop')) hidePromptPop();
+});
+document.addEventListener('scroll', hidePromptPop, true);
+
 async function loadGallery() {
   const r = await fetch(API + '/api/gallery');
   const j = await r.json();
@@ -382,6 +447,18 @@ async function loadGallery() {
     d.className = 'tile';
     d.innerHTML = `<img loading="lazy" src="${API}${f.url}" alt="">`;
     d.onclick = () => openLb(f);
+    if (tilePrompt(f)) {
+      const ib = document.createElement('div');
+      ib.className = 'info-btn';
+      ib.textContent = 'i';
+      ib.title = 'исходный промпт';
+      ib.onclick = e => {
+        e.stopPropagation();
+        if (ib.classList.contains('pinned')) { hidePromptPop(); return; }
+        showPromptPop(e, f, ib);
+      };
+      d.appendChild(ib);
+    }
     grid.appendChild(d);
   });
 }
@@ -391,7 +468,8 @@ function openLb(f) {
   $('lbDl').href = API + f.url;
   $('lbDl').download = f.name;
   const mb = f.size ? (f.size / 1048576).toFixed(2) + ' МБ' : '';
-  $('lbMeta').textContent = f.name + (mb ? '  ·  ' + mb : '');
+  const p = tilePrompt(f);
+  $('lbMeta').textContent = (p ? p.text + (p.exact ? '' : ' …') + '  ·  ' : '') + f.name + (mb ? '  ·  ' + mb : '');
   $('lbDl').onclick = () => {
     toast('закачка пошла' + (mb ? ' (' + mb + ')' : '') + ' — файл появится в загрузках');
   };
