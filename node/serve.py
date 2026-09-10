@@ -15,9 +15,12 @@ sys.path.insert(0, str(HERE))
 import config
 
 # Kill SOCKS proxy for httpx inside WanGP/gradio stack
-for k in ('http_proxy', 'HTTP_PROXY', 'https_proxy', 'HTTPS_PROXY', 'ALL_PROXY'):
+for k in ('http_proxy', 'HTTP_PROXY', 'https_proxy', 'HTTPS_PROXY', 'ALL_PROXY', 'all_proxy'):
     os.environ.pop(k, None)
 os.environ['NO_PROXY'] = '*'
+# HF Xet bridge is blocked from this box; plain HTTPS works direct (~2.7 MB/s).
+os.environ.setdefault('HF_HUB_DISABLE_XET', '1')
+os.environ.setdefault('HF_HUB_ENABLE_HF_TRANSFER', '0')
 
 WAN2GP_ROOT = str(config.WAN2GP_ROOT)
 sys.path.insert(0, WAN2GP_ROOT)

@@ -34,6 +34,20 @@ textarea {
   font-family: inherit; min-height: 56px; max-height: 200px;
 }
 textarea::placeholder { color: #555; }
+.modeswitch { display: flex; gap: 6px; margin-bottom: 12px; }
+.ms-btn {
+  background: var(--card2); border: 1px solid #2a2a2a; border-radius: 10px;
+  color: var(--dim); font-size: 13px; padding: 7px 14px; cursor: pointer;
+}
+.ms-btn.active { color: var(--text); border-color: var(--accent-dim); background: var(--accent-dim); }
+.tile.audio {
+  aspect-ratio: 4/3; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 10px; padding: 16px; background: var(--card2);
+}
+.tile.audio .aicon { font-size: 30px; opacity: .8; }
+.tile.audio audio { width: 100%; }
+.tile.audio .alabel { font-size: 11px; color: var(--dim); text-align: center;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 .controls {
   display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap;
 }
@@ -160,8 +174,12 @@ input[type=text].seedin {
   </div>
 
   <div class="prompt-card">
+    <div class="modeswitch">
+      <button class="ms-btn active" id="modeImage" data-m="image">🖼 Изображение</button>
+      <button class="ms-btn" id="modeAudio" data-m="audio">🎵 Аудио</button>
+    </div>
     <textarea id="prompt" placeholder="Опиши, что нарисовать… (Enter — сгенерировать)" rows="2"></textarea>
-    <div class="controls">
+    <div class="controls" id="ctrlsImage">
       <div class="chip" id="resChip">▦ <span class="val" id="resVal">512×512</span></div>
       <div class="chip" id="stepsChip">◍ <span class="val" id="stepsVal">6</span> шагов</div>
       <div class="chip" id="seedChip">⚄ <span class="val" id="seedVal">random</span></div>
@@ -169,6 +187,14 @@ input[type=text].seedin {
       <div class="chip" id="img2imgChip" title="генерация на основе загруженного изображения (img2img)">🖼 <span class="val" id="img2imgVal">img2img</span><span id="img2imgClear" style="display:none; margin-left:4px; cursor:pointer;">✕</span></div>
       <input type="file" id="img2imgFile" accept="image/*" style="display:none">
       <button class="gen-btn" id="genBtn" disabled>Generate</button>
+    </div>
+    <div class="controls" id="ctrlsAudio" hidden>
+      <select id="audioModel" class="seedin" style="width:auto"></select>
+      <label id="audioDurWrap" style="display:flex;align-items:center;gap:8px;color:var(--dim);font-size:13px">
+        <span id="audioDurLbl">длительность 8с</span>
+        <input type="range" id="audioDur" min="2" max="120" value="8" step="1" style="width:150px">
+      </label>
+      <button class="gen-btn" id="genBtnA" disabled>Generate</button>
     </div>
     <div id="i2iPreview" style="display:none; margin-top:10px;">
       <img id="i2iPreviewImg" alt="источник" style="max-height:96px; border-radius:8px; border:1px solid #2a2a2a; display:block;">
@@ -219,6 +245,7 @@ input[type=text].seedin {
 
 <div class="lb" id="lb" onclick="if(event.target===this)closeLb()">
   <img id="lbImg">
+  <audio id="lbAudio" controls hidden style="width:min(90vw,520px)"></audio>
   <div class="lb-meta" id="lbMeta"></div>
   <div class="lb-actions">
     <button class="lb-btn" id="lbToI2i">🖼 В img2img</button>
@@ -315,6 +342,61 @@ promptEl.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); generate(); }
 });
 $('genBtn').addEventListener('click', generate);
+$('genBtnA').addEventListener('click', generate);
+
+/* ---- image / audio mode ---- */
+let genMode = 'image';
+let audioModels = {};   // alias -> model_cost entry (modality:audio)
+const AUDIO_PH = {
+  music: 'Опиши музыку: жанр, темп, инструменты, настроение…',
+  sfx: 'Опиши звук: удар, свист, дождь, эмбиент…',
+  tts: 'Текст для озвучки…',
+};
+function setMode(m) {
+  genMode = m;
+  $('modeImage').classList.toggle('active', m === 'image');
+  $('modeAudio').classList.toggle('active', m === 'audio');
+  $('ctrlsImage').hidden = m === 'audio';
+  $('ctrlsAudio').hidden = m === 'image';
+  if (m === 'audio') onAudioModelChange();
+  else promptEl.placeholder = 'Опиши, что нарисовать… (Enter — сгенерировать)';
+  updateBtn();
+}
+$('modeImage').onclick = () => setMode('image');
+$('modeAudio').onclick = () => setMode('audio');
+$('audioModel').onchange = onAudioModelChange;
+$('audioDur').oninput = () => $('audioDurLbl').textContent = 'длительность ' + $('audioDur').value + 'с';
+function onAudioModelChange() {
+  const mc = audioModels[$('audioModel').value] || {};
+  const isTts = mc.kind === 'tts';
+  $('audioDurWrap').style.display = isTts ? 'none' : 'flex';
+  if (mc.max_duration_s) $('audioDur').max = mc.max_duration_s;
+  promptEl.placeholder = AUDIO_PH[mc.kind] || 'Опиши звук…';
+}
+async function loadAudioCaps() {
+  try {
+    const r = await fetch(API + '/api/status');
+    const s = await r.json();
+    const nodes = Array.isArray(s.nodes) ? s.nodes : [];
+    const mc = {};
+    nodes.forEach(n => Object.assign(mc, (n.caps || {}).model_cost || {}));
+    audioModels = {};
+    const sel = $('audioModel');
+    sel.innerHTML = '';
+    const LBL = { music: '🎵 Музыка', sfx: '💥 Звук/SFX', tts: '🗣 Речь' };
+    for (const [alias, c] of Object.entries(mc)) {
+      if (c.modality !== 'audio') continue;
+      audioModels[alias] = c;
+      const o = document.createElement('option');
+      o.value = alias;
+      o.textContent = (LBL[c.kind] || alias) + ' · ' + alias;
+      sel.appendChild(o);
+    }
+    $('modeAudio').style.display = Object.keys(audioModels).length ? '' : 'none';
+    onAudioModelChange();
+  } catch (e) {}
+}
+loadAudioCaps();
 
 function useExample() {
   promptEl.value = 'рыжий кот на фоне солнечного леса, детализированная шерсть, кинематографичный свет';
@@ -326,12 +408,21 @@ function useExample() {
 async function generate() {
   const p = promptEl.value.trim();
   if (busy || curJob || !modelReady || !p) return;
-  const body = { prompt: p, resolution: res, steps: steps, draft: draft,
-                 mode: initImage ? 'img2img' : 'txt2img' };
-  if (initImage) body.init_image = initImage;
-  if (seed !== null) body.seed = seed;
-  $('genBtn').disabled = true;
-  $('genBtn').textContent = 'Отправка…';
+  let body;
+  if (genMode === 'audio') {
+    const mc = audioModels[$('audioModel').value] || {};
+    body = { modality: 'audio', model: $('audioModel').value, prompt: p };
+    if (mc.kind !== 'tts') body.duration_s = +$('audioDur').value;
+    if (seed !== null) body.seed = seed;
+  } else {
+    body = { prompt: p, resolution: res, steps: steps, draft: draft,
+             mode: initImage ? 'img2img' : 'txt2img' };
+    if (initImage) body.init_image = initImage;
+    if (seed !== null) body.seed = seed;
+  }
+  const btn = genMode === 'audio' ? $('genBtnA') : $('genBtn');
+  btn.disabled = true;
+  btn.textContent = 'Отправка…';
   try {
     const r = await fetch(API + '/api/generate', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
     if (!r.ok) {
@@ -341,7 +432,9 @@ async function generate() {
     }
     const j = await r.json();
     curJob = j.id;
-    showJobCard('в очереди…', '', 0);
+    if (j.swap) showJobCard('загрузка модели', j.eta_s ? '~' + j.eta_s + 'с' : '', 0);
+    else showJobCard('в очереди…', '', 0);
+    if (j.warnings && j.warnings.length) toast(j.warnings.join('; '));
     updateBtn();
   } catch (e) {
     toast('нет связи с сервером'); updateBtn();
@@ -350,7 +443,7 @@ async function generate() {
 
 function showJobCard(phase, step, pct, previewUrl) {
   $('jobCard').classList.add('show');
-  $('jobPhase').textContent = {'encoding_text':'кодирование промпта','inference':'генерация','decoding':'декодирование','в очереди…':'в очереди…'}[phase] || phase;
+  $('jobPhase').textContent = {'encoding_text':'кодирование промпта','inference':'генерация','decoding':'декодирование','в очереди…':'в очереди…','загрузка модели':'загрузка модели в GPU…','model_swap':'загрузка модели в GPU…'}[phase] || phase;
   $('jobStep').textContent = step;
   $('jobBar').style.width = pct + '%';
   if (previewUrl) {
@@ -366,6 +459,7 @@ es.onmessage = e => {
   if (ev.type === 'hello') { modelReady = ev.ready; busy = ev.busy; updateBtn(); }
   else if (ev.type === 'ready') { modelReady = true; updateBtn(); toast('модель готова'); }
   else if (ev.type === 'job_start' && ev.id === curJob) showJobCard('в очереди…', '', 0);
+  else if (ev.type === 'model_swap' && ev.id === curJob) showJobCard('model_swap', ev.eta_s ? '~' + ev.eta_s + 'с' : '', 0);
   else if (ev.type === 'progress' && ev.id === curJob) showJobCard(ev.phase, 'шаг ' + ev.step, ev.pct);
   else if (ev.type === 'preview' && ev.id === curJob) showJobCard($('jobPhase').textContent, $('jobStep').textContent, parseInt($('jobBar').style.width)||0, API + ev.url);
   else if (ev.type === 'job_done' && ev.id === curJob) {
@@ -386,8 +480,9 @@ function hideJobCard() {
 }
 function updateBtn() {
   const generating = busy || curJob !== null;
-  $('genBtn').disabled = generating || !modelReady || !promptEl.value.trim();
-  $('genBtn').textContent = generating ? 'Генерация…' : !modelReady ? 'Загрузка модели…' : 'Generate';
+  const dis = generating || !modelReady || !promptEl.value.trim();
+  const txt = generating ? 'Генерация…' : !modelReady ? 'Загрузка модели…' : 'Generate';
+  for (const id of ['genBtn', 'genBtnA']) { $(id).disabled = dis; $(id).textContent = txt; }
 }
 promptEl.addEventListener('input', updateBtn);
 
@@ -444,6 +539,16 @@ async function loadGallery() {
   grid.innerHTML = '';
   j.files.forEach(f => {
     const d = document.createElement('div');
+    if (f.modality === 'audio') {
+      d.className = 'tile audio';
+      const dur = f.duration_s ? ` · ${f.duration_s}с` : '';
+      d.innerHTML = `<div class="aicon">${f.kind === 'tts' ? '🗣' : '🎵'}</div>` +
+        `<audio controls preload="none" src="${API}${f.url}" onclick="event.stopPropagation()"></audio>` +
+        `<div class="alabel">${escHtml((tilePrompt(f) || {}).text || f.name)}${dur}</div>`;
+      d.onclick = () => openLb(f);
+      grid.appendChild(d);
+      return;
+    }
     d.className = 'tile';
     d.innerHTML = `<img loading="lazy" src="${API}${f.url}" alt="">`;
     d.onclick = () => openLb(f);
@@ -464,7 +569,12 @@ async function loadGallery() {
 }
 
 function openLb(f) {
-  $('lbImg').src = API + f.url;
+  const isAudio = f.modality === 'audio';
+  $('lbImg').hidden = isAudio;
+  $('lbAudio').hidden = !isAudio;
+  if (isAudio) { $('lbAudio').src = API + f.url; }
+  else { $('lbImg').src = API + f.url; }
+  $('lbToI2i').style.display = isAudio ? 'none' : '';
   $('lbDl').href = API + f.url;
   $('lbDl').download = f.name;
   const mb = f.size ? (f.size / 1048576).toFixed(2) + ' МБ' : '';
@@ -475,7 +585,7 @@ function openLb(f) {
   };
   $('lb').classList.add('show');
 }
-function closeLb() { $('lb').classList.remove('show'); }
+function closeLb() { $('lb').classList.remove('show'); try { $('lbAudio').pause(); } catch (e) {} }
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLb(); });
 
 $('lbToI2i').onclick = async () => {
