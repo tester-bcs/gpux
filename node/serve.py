@@ -5,7 +5,7 @@ Wraps WanGP API: keeps the session loaded, queues jobs, streams SSE progress.
 
 Reads paths/settings from config.py next to this file.
 """
-import os, sys, time, json, queue, threading, uuid
+import os, sys, time, json, queue, threading, uuid, io, base64
 from pathlib import Path
 
 HERE = Path(__file__).parent
@@ -25,13 +25,26 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from PIL import Image
 
 OUTPUTS = Path(WAN2GP_ROOT) / 'outputs'
 PREVIEWS = HERE.parent / 'previews'
 PREVIEWS.mkdir(parents=True, exist_ok=True)
+INPUTS = HERE.parent / 'inputs'          # user-supplied source images for img2img
+INPUTS.mkdir(parents=True, exist_ok=True)
 ALLOWED_EXT = {'.jpg', '.jpeg', '.png', '.webp'}
+MAX_INPUT_BYTES = 20 * 1024 * 1024       # cap decoded upload size
+INPUT_MAX_SIDE = 2048                    # downscale huge uploads before handing to WanGP
 # idle-farming flag: when present, node reports not-ready (Horde worker holds VRAM)
 FARMING_FLAG = HERE / '.farming'
+
+# sweep stale img2img source images left over from crashed jobs (>2h old)
+for _f in INPUTS.glob('*'):
+    try:
+        if _f.is_file() and time.time() - _f.stat().st_mtime > 7200:
+            _f.unlink()
+    except Exception:
+        pass
 
 app = FastAPI(title="gpux node")
 
@@ -122,6 +135,12 @@ def wan2gp_job_worker():
             print(f"[node] job {jid} exception: {e}", flush=True)
         finally:
             state.update(busy=False, current_job=None)
+            src = job.get('input_file')
+            if src:
+                try:
+                    Path(src).unlink(missing_ok=True)
+                except Exception:
+                    pass
 
 threading.Thread(target=wan2gp_init_worker, daemon=True).start()
 threading.Thread(target=wan2gp_job_worker, daemon=True).start()
@@ -131,6 +150,32 @@ class GenRequest(BaseModel):
     resolution: str = "1280x960"
     steps: int = 20
     seed: int | None = None
+    mode: str = "txt2img"           # "txt2img" | "img2img"
+    init_image: str | None = None   # data URL or bare base64, required for img2img
+    denoise: float = 0.6            # reserved for latent img2img (image_guide path)
+
+
+def _decode_init_image(data: str, jid: str) -> Path:
+    """Decode a base64 / data-URL upload to a normalized PNG under INPUTS/. Returns the path."""
+    raw = data.split(',', 1)[-1] if data.startswith('data:') else data
+    try:
+        blob = base64.b64decode(raw, validate=True)
+    except Exception:
+        raise HTTPException(400, "init_image is not valid base64")
+    if len(blob) > MAX_INPUT_BYTES:
+        raise HTTPException(413, f"init_image too large (>{MAX_INPUT_BYTES // (1024*1024)} MB)")
+    try:
+        img = Image.open(io.BytesIO(blob))
+        img.load()
+        img = img.convert("RGB")
+    except Exception as e:
+        raise HTTPException(400, f"init_image is not a readable image: {e}")
+    if max(img.size) > INPUT_MAX_SIDE:
+        img.thumbnail((INPUT_MAX_SIDE, INPUT_MAX_SIDE), Image.LANCZOS)
+    path = INPUTS / f"{jid}.png"
+    img.save(path, "PNG")
+    return path.resolve()
+
 
 @app.post("/api/generate")
 async def api_generate(req: GenRequest):
@@ -138,6 +183,7 @@ async def api_generate(req: GenRequest):
         raise HTTPException(503, f"model loading, {round(time.time()-state['init_started'])}s elapsed")
     if not req.prompt.strip():
         raise HTTPException(400, "empty prompt")
+    jid = uuid.uuid4().hex[:12]
     settings = {
         "model_type": config.MODEL_TYPE,
         "prompt": req.prompt.strip(),
@@ -148,8 +194,17 @@ async def api_generate(req: GenRequest):
     }
     if req.seed is not None:
         settings["seed"] = req.seed
-    jid = uuid.uuid4().hex[:12]
-    job_queue.put({'id': jid, 'settings': settings})
+
+    input_file = None
+    if req.mode == "img2img":
+        if not req.init_image:
+            raise HTTPException(400, "img2img requires init_image")
+        input_file = _decode_init_image(req.init_image, jid)
+        # Flux 2 Klein: reference/edit path. WanGP auto-sets video_prompt_type="KI"
+        # from the model's image_ref_choices when image_refs is present.
+        settings["image_refs"] = [str(input_file)]
+
+    job_queue.put({'id': jid, 'settings': settings, 'input_file': str(input_file) if input_file else None})
     state['queue_len'] = job_queue.qsize()
     return {"id": jid, "queue": state['queue_len'], "busy": state['busy']}
 

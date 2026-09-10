@@ -34,6 +34,7 @@ CAPABILITIES = {
     "backends": ["wangp"],
     "models": [MODEL_TYPE],
     "modalities": ["image"],
+    "features": ["img2img"],
     "vram_gb": 16,
     "max_resolution": "1536x1152",
     "hostname": "mini-pc",

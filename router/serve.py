@@ -83,7 +83,7 @@ async def refresh_health():
     for name, snap in results:
         _health[name] = snap
 
-async def pick_node(modality: str = "image", model: str | None = None):
+async def pick_node(modality: str = "image", model: str | None = None, feature: str | None = None):
     """Return (node, health) of best node that can serve the request."""
     if not _health or min((h['ts'] for h in _health.values()), default=0) < time.time() - HEALTH_TTL:
         await refresh_health()
@@ -92,14 +92,18 @@ async def pick_node(modality: str = "image", model: str | None = None):
         caps = h.get('caps') or {}
         # node without capabilities endpoint: assume image-only wangp node (backward compat)
         if not caps:
-            return modality == "image" and (model is None or model == "flux2_klein_4b")
+            return (modality == "image" and feature is None
+                    and (model is None or model == "flux2_klein_4b"))
         return (modality in (caps.get('modalities') or [])
-                and (model is None or model in (caps.get('models') or [])))
+                and (model is None or model in (caps.get('models') or []))
+                and (feature is None or feature in (caps.get('features') or [])))
 
     eligible = [(n, _health[n['name']]) for n in NODES
                 if _health.get(n['name'], {}).get('ok') and can_serve(n, _health[n['name']])]
     if not eligible:
         want = f"model={model or 'any'} modality={modality}"
+        if feature:
+            want += f" feature={feature}"
         raise HTTPException(503, detail=f'no GPU nodes can serve {want}')
 
     free = [(n, h) for n, h in eligible
@@ -127,6 +131,9 @@ class GenRequest(BaseModel):
     modality: str = "image"
     model: str | None = None
     draft: bool = False
+    mode: str = "txt2img"           # "txt2img" | "img2img"
+    init_image: str | None = None   # data URL / base64, forwarded verbatim to the node
+    denoise: float = 0.6
 
 # ---------------- routes ----------------
 @app.get("/api/status")
@@ -140,6 +147,12 @@ async def status():
 @app.post("/api/generate")
 async def generate(req: GenRequest, request: Request):
     user = auth_user(request)
+    is_img2img = req.mode == "img2img"
+    if is_img2img:
+        if req.draft:
+            raise HTTPException(400, detail='img2img cannot be routed to draft/Horde overflow')
+        if not req.init_image:
+            raise HTTPException(400, detail='img2img requires init_image')
     # ---- Horde overflow for drafts ----
     if req.draft:
         if not HORDE:
@@ -161,9 +174,10 @@ async def generate(req: GenRequest, request: Request):
             pass
         return {'id': jid, 'node': 'aihorde', 'queue': 0, 'busy': False, 'draft': True}
 
-    node, h = await pick_node(req.modality, req.model)
+    node, h = await pick_node(req.modality, req.model,
+                              feature='img2img' if is_img2img else None)
     body = req.model_dump()
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(node['url'] + '/api/generate', json=body)
         if r.status_code != 200:
             raise HTTPException(r.status_code, detail=r.text)
