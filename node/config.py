@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""gpux node config — mini-pc (Илья, RTX 5070 Ti 16GB)."""
+"""gpux node config — ms-7c75 (RTX 5060 Ti 16GB)."""
+import os
 from pathlib import Path
 
 # WanGP installation root (contains wgp.py, shared/, ckpts/)
@@ -26,6 +27,13 @@ WAN2GP_ARGS = ["--attention", "sdpa", "--profile", "4"]
 # min free VRAM (GB) for the node to accept tasks — if a game/render eats the GPU,
 # the node honestly goes offline in /api/status
 MIN_FREE_VRAM_GB = 6.0
+
+# central gallery service (gpux-gallery on niceguy) — finished images are pushed here.
+# Empty GALLERY_URL disables the push (node keeps only local outputs/).
+GALLERY_URL = os.environ.get('GPUX_GALLERY_URL', 'http://100.64.0.2:8097')
+_tok = Path(__file__).resolve().parent / 'gallery.token'
+GALLERY_TOKEN = (_tok.read_text().strip() if _tok.exists()
+                 else os.environ.get('GPUX_GALLERY_TOKEN', ''))
 
 # what this node can serve (router routes by these)
 CAPABILITIES = {

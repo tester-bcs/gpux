@@ -8,6 +8,8 @@ Reads paths/settings from config.py next to this file.
 import os, sys, time, json, queue, threading, uuid, io, base64
 from pathlib import Path
 
+import httpx
+
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
 import config
@@ -32,6 +34,8 @@ PREVIEWS = HERE.parent / 'previews'
 PREVIEWS.mkdir(parents=True, exist_ok=True)
 INPUTS = HERE.parent / 'inputs'          # user-supplied source images for img2img
 INPUTS.mkdir(parents=True, exist_ok=True)
+GALLERY_PENDING = HERE.parent / 'gallery_pending'   # push retries when central store is down
+GALLERY_PENDING.mkdir(parents=True, exist_ok=True)
 ALLOWED_EXT = {'.jpg', '.jpeg', '.png', '.webp'}
 MAX_INPUT_BYTES = 20 * 1024 * 1024       # cap decoded upload size
 INPUT_MAX_SIDE = 2048                    # downscale huge uploads before handing to WanGP
@@ -66,6 +70,62 @@ def broadcast(event: dict):
     for q in dead:
         listeners.remove(q)
 
+# ---------------- central gallery push ----------------
+GALLERY_URL = (getattr(config, 'GALLERY_URL', '') or '').rstrip('/')
+GALLERY_TOKEN = getattr(config, 'GALLERY_TOKEN', '')
+NODE_NAME = config.CAPABILITIES.get('hostname', 'node')
+
+def _push_one(path: Path, meta: dict) -> bool:
+    """POST one image + meta to the gallery service. True on success."""
+    mt = 'image/jpeg' if path.suffix.lower() in ('.jpg', '.jpeg') else \
+         'image/png' if path.suffix.lower() == '.png' else 'image/webp'
+    with httpx.Client(timeout=30) as c:
+        r = c.post(GALLERY_URL + '/ingest',
+                   headers={'X-Gpux-Token': GALLERY_TOKEN},
+                   data={'node': NODE_NAME, 'meta': json.dumps(meta, ensure_ascii=False)},
+                   files={'file': (path.name, path.read_bytes(), mt)})
+    if r.status_code == 200:
+        return True
+    print(f"[node] gallery push {path.name} -> {r.status_code} {r.text[:120]}", flush=True)
+    return False
+
+def _queue_pending(path: Path, meta: dict):
+    try:
+        (GALLERY_PENDING / (path.name + '.json')).write_text(
+            json.dumps({'file': str(path), 'meta': meta}, ensure_ascii=False))
+    except Exception as e:
+        print(f"[node] pending-queue write failed: {e}", flush=True)
+
+def push_to_gallery(path: str, meta: dict):
+    if not GALLERY_URL:
+        return
+    p = Path(path)
+    if not p.exists():
+        return
+    try:
+        if _push_one(p, meta):
+            print(f"[node] gallery <- {p.name}", flush=True)
+        else:
+            _queue_pending(p, meta)
+    except Exception as e:
+        print(f"[node] gallery push failed ({p.name}): {e}", flush=True)
+        _queue_pending(p, meta)
+
+def flush_pending():
+    if not GALLERY_URL:
+        return
+    for j in list(GALLERY_PENDING.glob('*.json')):
+        try:
+            d = json.loads(j.read_text())
+            p = Path(d['file'])
+            if not p.exists():
+                j.unlink(); continue
+            if _push_one(p, d.get('meta', {})):
+                j.unlink()
+                print(f"[node] gallery <- {p.name} (retry)", flush=True)
+        except Exception as e:
+            print(f"[node] pending flush error for {j.name}: {e}", flush=True)
+
 def wan2gp_init_worker():
     try:
         from shared.api import init
@@ -80,6 +140,7 @@ def wan2gp_init_worker():
         print(f"[node] init FAILED: {e}", flush=True)
 
 def wan2gp_job_worker():
+    flush_pending()
     while True:
         job = job_queue.get()
         jid = job['id']
@@ -133,6 +194,8 @@ def wan2gp_job_worker():
                 broadcast({'type': 'job_done', 'id': jid, 'files': files,
                            'timings': timings, 'total': t_total})
                 print(f"[node] job {jid} done in {t_total}s", flush=True)
+                for f in files:
+                    push_to_gallery(f, {**job.get('meta', {}), 'file': Path(f).name})
             else:
                 errs = '; '.join(e.message for e in result.errors)
                 jobs_done[jid] = {'status': 'error', 'error': errs, 'total': t_total}
@@ -150,6 +213,7 @@ def wan2gp_job_worker():
                     Path(src).unlink(missing_ok=True)
                 except Exception:
                     pass
+            flush_pending()
 
 threading.Thread(target=wan2gp_init_worker, daemon=True).start()
 threading.Thread(target=wan2gp_job_worker, daemon=True).start()

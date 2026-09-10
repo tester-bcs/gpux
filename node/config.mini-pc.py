@@ -3,6 +3,7 @@
 
 Deploy: copy this file as node/config.py on the mini-pc machine.
 """
+import os
 from pathlib import Path
 
 # WanGP installation root (contains wgp.py, shared/, ckpts/)
@@ -28,6 +29,12 @@ WAN2GP_ARGS = ["--attention", "sdpa", "--profile", "4"]
 
 # min free VRAM (GB) — node goes offline when GPU busy with games/render
 MIN_FREE_VRAM_GB = 6.0
+
+# central gallery service (gpux-gallery on niceguy) — finished images are pushed here.
+GALLERY_URL = os.environ.get('GPUX_GALLERY_URL', 'http://100.64.0.2:8097')
+_tok = Path(__file__).resolve().parent / 'gallery.token'
+GALLERY_TOKEN = (_tok.read_text().strip() if _tok.exists()
+                 else os.environ.get('GPUX_GALLERY_TOKEN', ''))
 
 # what this node can serve (router routes by these)
 CAPABILITIES = {
