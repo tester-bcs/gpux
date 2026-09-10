@@ -91,9 +91,26 @@ async def refresh_health():
     for name, snap in results:
         _health[name] = snap
 
+async def ensure_health():
+    """Use cached health; refresh synchronously only on a cold start."""
+    if not _health:
+        await refresh_health()
+
+@app.on_event("startup")
+async def _health_loop():
+    async def loop():
+        while True:
+            try:
+                await refresh_health()
+            except Exception as e:
+                print(f'[router] health loop error: {e}', flush=True)
+            await asyncio.sleep(HEALTH_TTL)
+    asyncio.create_task(loop())
+
 async def pick_node(modality: str = "image", model: str | None = None, feature: str | None = None):
     """Return (node, health) of best node that can serve the request."""
-    if not _health or min((h['ts'] for h in _health.values()), default=0) < time.time() - HEALTH_TTL:
+    # background loop keeps _health fresh; only block on a cold start or a very stale cache
+    if not _health or min((h['ts'] for h in _health.values()), default=0) < time.time() - 3 * HEALTH_TTL:
         await refresh_health()
 
     def can_serve(n, h):
@@ -146,7 +163,7 @@ class GenRequest(BaseModel):
 # ---------------- routes ----------------
 @app.get("/api/status")
 async def status():
-    await refresh_health()
+    await ensure_health()   # cached; background loop keeps it fresh
     nodes = [{'name': n['name'], **_health.get(n['name'], {})} for n in NODES]
     free = sum(1 for x in nodes if x.get('ready') and not x.get('busy') and x.get('queue', 0) == 0)
     return {'ready': free > 0, 'nodes': nodes,

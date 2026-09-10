@@ -510,10 +510,12 @@ async function pollStatus() {
     // router aggregate shape: {ready, nodes:[{ok,ready,busy,detail:{init_elapsed,init_error}}], ...}
     // direct-node shape:      {ready, busy, init_elapsed, init_error}
     const nodes = Array.isArray(s.nodes) ? s.nodes : null;
-    const modelUp = nodes ? nodes.some(n => n.ok && n.ready) : !!s.ready;
-    const initErr = nodes ? nodes.some(n => n.detail && n.detail.init_error) : !!s.init_error;
-    const initElapsed = nodes ? (nodes[0] && nodes[0].detail && nodes[0].detail.init_elapsed) : s.init_elapsed;
-    busy = nodes ? nodes.some(n => n.busy) : !!s.busy;
+    const up = nodes ? nodes.filter(n => n.ok) : null;   // only reachable nodes
+    const modelUp = up ? up.some(n => n.ready) : !!s.ready;
+    const initErr = up ? up.some(n => n.detail && n.detail.init_error) : !!s.init_error;
+    const initElapsed = up && up[0] && up[0].detail ? up[0].detail.init_elapsed : s.init_elapsed;
+    // model is loaded somewhere but the router has no free slot => a job is running
+    busy = nodes ? (modelUp && s.free === 0) : !!s.busy;
     // fallback если SSE отвалился: проверяем свою задачу напрямую пока она активна
     if (curJob) {
       const jr = await fetch(API + '/api/jobs/' + curJob);
