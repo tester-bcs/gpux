@@ -291,6 +291,7 @@ promptEl.addEventListener('input', () => {
 promptEl.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); generate(); }
 });
+$('genBtn').addEventListener('click', generate);
 
 function useExample() {
   promptEl.value = 'рыжий кот на фоне солнечного леса, детализированная шерсть, кинематографичный свет';
